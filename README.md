@@ -79,4 +79,4 @@ setoption name EvalFile value path/to/nn-nyx.nnue
 - `go depth <depth>` - Begin search up to a certain depth
 
 ## License
-MIT License
+GNU GPLv3 license

@@ -226,10 +226,10 @@ bool loadPositionFromParts(Board &board, const std::string &boardPlacement,
 Board::Board() {
   int startSet[8] = {4, 2, 3, 5, 6, 3, 2, 4};
   for (int i = 0; i < 8; ++i) {
-    sqaures[i] = startSet[i];
-    sqaures[i + 8] = 1;
-    sqaures[63 - i - 8] = -1;
-    sqaures[63 - i] = -startSet[i];
+    sqaures[i] = startSet[i];       // White back rank (rank 1)
+    sqaures[i + 8] = 1;             // White pawns (rank 2)
+    sqaures[48 + i] = -1;           // Black pawns (rank 7)
+    sqaures[56 + i] = -startSet[i]; // Black back rank (rank 8)
   }
 
   whiteTurn = true;

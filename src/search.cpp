@@ -5,7 +5,58 @@
 #include <algorithm>
 #include <iostream>
 
+
 namespace Search {
+
+std::atomic<bool> gStopSearch{false};
+
+class TimeManager {
+  std::chrono::time_point<std::chrono::steady_clock> startTime;
+  long long timeLimitMs;
+  bool useTimeManagement;
+
+public:
+  void start(const SearchOptions& options, bool whiteTurn) {
+    startTime = std::chrono::steady_clock::now();
+    useTimeManagement = false;
+    timeLimitMs = 0;
+
+    if (options.infinite) return;
+
+    if (options.movetime > 0) {
+      timeLimitMs = options.movetime;
+      useTimeManagement = true;
+      return;
+    }
+
+    long long timeLeft = whiteTurn ? options.wtime : options.btime;
+    long long inc = whiteTurn ? options.winc : options.binc;
+
+    if (timeLeft > 0) {
+      int movesToGo = options.movestogo > 0 ? options.movestogo : 40;
+      timeLimitMs = (timeLeft / movesToGo) + (inc / 2);
+      if (timeLimitMs > timeLeft) timeLimitMs = timeLeft - 50;
+      if (timeLimitMs < 0) timeLimitMs = 0;
+      useTimeManagement = true;
+    }
+  }
+
+  bool timeIsUp() const {
+    if (!useTimeManagement) return false;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+    return elapsed >= timeLimitMs;
+  }
+
+  long long elapsed() const {
+     auto now = std::chrono::steady_clock::now();
+     return std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+  }
+};
+
+TimeManager gTimeManager;
+
+
 
 enum TTFlag { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
 
@@ -228,7 +279,15 @@ int quiescence(Board &board, int alpha, int beta, int ply, SearchState &state,
 }
 
 int negamaxMiniMax(Board &board, int depth, int ply, SearchStats &stats) {
+
+
   ++stats.nodes;
+  if ((stats.nodes & 2047) == 0) {
+    if (gStopSearch || gTimeManager.timeIsUp()) {
+      gStopSearch = true;
+    }
+  }
+  if (gStopSearch) return 0;
 
   if (depth == 0)
     return evaluateForSideToMove(board);
@@ -268,6 +327,8 @@ int negamaxAlphaBeta(Board &board, int depth, int alpha, int beta, int ply,
                      SearchState &state, SearchStats &stats,
                      const SearchOptions &options) {
   ++stats.nodes;
+  if ((stats.nodes & 2047) == 0) { if (gStopSearch || gTimeManager.timeIsUp()) { gStopSearch = true; } }
+  if (gStopSearch) return 0;
 
   if (Chess::isFiftyMoveDraw(board) ||
       Chess::isInsufficientMaterialDraw(board) ||
@@ -462,28 +523,59 @@ SearchResult runAlphaBeta(const Board &rootBoard, int depth, SearchState &state,
   return result;
 }
 
+std::string getPV(const Board& rootBoard, int depth) {
+  std::string pvStr = "";
+  Board board = rootBoard;
+  std::uint64_t key = board.zobristKey;
+  
+  for (int i = 0; i < depth; ++i) {
+    TTEntry &entry = transpositionTable[ttIndex(key)];
+    if (entry.key == key && entry.bestMoveCode != -1) {
+      int from = entry.bestMoveCode & 0x3F;
+      int to = (entry.bestMoveCode >> 6) & 0x3F;
+      int promo = (entry.bestMoveCode >> 12) & 0x7;
+      Move m; m.from = from; m.to = to; m.promotion = promo;
+      
+      pvStr += toUci(m) + " ";
+      if (promo == 0) {
+        if (!Chess::makeMove(board, from, to)) break;
+      } else {
+        if (!Chess::makeMove(board, from, to, promo)) break;
+      }
+      key = board.zobristKey;
+    } else {
+      break;
+    }
+  }
+  return pvStr;
+}
+
 SearchResult runIterativeDeepening(const Board &rootBoard, SearchState &state,
                                     const SearchOptions &options) {
+  gStopSearch = false;
+  gTimeManager.start(options, rootBoard.whiteTurn);
+
   SearchResult finalResult;
   SearchStats totalStats;
   int preferredMoveCode = -1;
 
-  // Aspiration window: start with full window, then narrow around last score
   static constexpr int ASPIRATION_DELTA = 50;
   int prevScore = 0;
   bool useAspiration = false;
 
   for (int depth = 1; depth <= options.maxDepth; ++depth) {
+    if (gStopSearch) break;
+
     SearchResult iteration;
 
     if (useAspiration && depth >= 4) {
-      // Try narrow window first
       int alpha = prevScore - ASPIRATION_DELTA;
       int beta = prevScore + ASPIRATION_DELTA;
 
       iteration = runAlphaBeta(rootBoard, depth, state, options, preferredMoveCode);
 
-      // If score fell outside aspiration window, re-search with full window
+      if (gStopSearch) break;
+
       if (iteration.hasMove &&
           (iteration.scoreForSideToMove <= alpha ||
            iteration.scoreForSideToMove >= beta)) {
@@ -493,8 +585,8 @@ SearchResult runIterativeDeepening(const Board &rootBoard, SearchState &state,
       iteration = runAlphaBeta(rootBoard, depth, state, options, preferredMoveCode);
     }
 
-    if (!iteration.hasMove)
-      break;
+    if (gStopSearch) break;
+    if (!iteration.hasMove) break;
 
     finalResult = iteration;
     preferredMoveCode = encodeMove(iteration.bestMove);
@@ -513,16 +605,22 @@ SearchResult runIterativeDeepening(const Board &rootBoard, SearchState &state,
     totalStats.ttCutoffs += iteration.stats.ttCutoffs;
     totalStats.ttStores += iteration.stats.ttStores;
 
-    if (options.enableLogging) {
-      std::cout << "[IterativeDeepening] depth=" << depth
-                << " best=" << toUci(iteration.bestMove)
-                << " score(side)=" << iteration.scoreForSideToMove
-                << " score(white)=" << iteration.scoreForWhite
-                << " nodes=" << iteration.stats.nodes
-                << " qnodes=" << iteration.stats.qNodes
-                << " cutoffs=" << iteration.stats.cutoffs
-                << " tthits=" << iteration.stats.ttHits
-                << " ttcutoffs=" << iteration.stats.ttCutoffs << '\n';
+    long long elapsed = gTimeManager.elapsed();
+    if (elapsed == 0) elapsed = 1; // avoid div by zero
+    long long nps = (totalStats.nodes * 1000) / elapsed;
+    
+    std::string pv = getPV(rootBoard, depth);
+    
+    std::cout << "info depth " << depth 
+              << " score cp " << iteration.scoreForSideToMove 
+              << " nodes " << totalStats.nodes
+              << " nps " << nps
+              << " time " << elapsed
+              << " pv " << pv << std::endl;
+              
+    if (options.nodes > 0 && totalStats.nodes >= options.nodes) {
+        gStopSearch = true;
+        break;
     }
   }
 

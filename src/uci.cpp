@@ -6,6 +6,7 @@
 #include "nnue.h"
 #include <iostream>
 #include <sstream>
+#include <thread>
 
 extern std::string gGameMovesUCI;
 
@@ -76,16 +77,23 @@ bool setPositionFromUCI(Board &board, const std::string &uciPositionCommand) {
 
 } // namespace Chess
 
+// Helper: stop and join the search thread if running
+static void stopSearchThread(std::thread &searchThread) {
+  if (searchThread.joinable()) {
+    Search::gStopSearch = true;
+    searchThread.join();
+  }
+}
+
 void uciLoop() {
   Board board;
   Search::SearchOptions options;
-  options.maxDepth = 8;
-  options.minimaxDepth = 2;
-  options.quiescenceMaxPly = 12;
-  options.enableLogging = false;
+  std::thread searchThread;
 
   std::string line;
   while (std::getline(std::cin, line)) {
+    if (line.empty()) continue;
+
     if (line == "uci") {
       std::cout << "id name Nyx" << std::endl;
       std::cout << "id author Nyx Team" << std::endl;
@@ -93,8 +101,11 @@ void uciLoop() {
       std::cout << "option name EvalFile type string default nn-nyx.nnue" << std::endl;
       std::cout << "uciok" << std::endl;
     } else if (line == "isready") {
+      // Must wait for any pending search to finish before responding
+      stopSearchThread(searchThread);
       std::cout << "readyok" << std::endl;
     } else if (line == "ucinewgame") {
+      stopSearchThread(searchThread);
       board = Board();
       gGameMovesUCI.clear();
       Search::clearTranspositionTable();
@@ -113,7 +124,12 @@ void uciLoop() {
         NNUE::init(value);
       }
     } else if (line.substr(0, 8) == "position") {
-      Chess::setPositionFromUCI(board, line);
+      // Always stop any running search before updating board
+      stopSearchThread(searchThread);
+
+      if (!Chess::setPositionFromUCI(board, line)) {
+        std::cout << "info string Failed to parse position command" << std::endl;
+      }
 
       // Extract moves for book probing
       gGameMovesUCI.clear();
@@ -122,25 +138,54 @@ void uciLoop() {
         gGameMovesUCI = line.substr(movesPos + 6);
       }
     } else if (line.substr(0, 2) == "go") {
+      // Always stop any previous search before starting a new one
+      stopSearchThread(searchThread);
+
       // Try opening book first
       std::string bookMove = Book::probe(gGameMovesUCI);
       if (!bookMove.empty()) {
-        std::cout << "bestmove " << bookMove << std::endl;
+        // Validate the book move against the current board
+        Board testBoard = board;
+        if (Chess::applyUCIMove(testBoard, bookMove)) {
+          std::cout << "bestmove " << bookMove << std::endl;
+          continue;
+        }
+        // Book move is illegal for this position — fall through to search
+      }
 
-        // Apply book move to internal state for next probe
-        Chess::applyUCIMove(board, bookMove);
-        if (!gGameMovesUCI.empty()) gGameMovesUCI += " ";
-        gGameMovesUCI += bookMove;
-      } else {
-        // Run search
-        Search::SearchResult result = Search::analyzeNextMove(board, options);
+      // Parse go parameters
+      options = Search::SearchOptions(); // Reset to defaults
+      std::istringstream ss(line);
+      std::string token;
+      ss >> token; // "go"
+      while (ss >> token) {
+        if (token == "wtime") ss >> options.wtime;
+        else if (token == "btime") ss >> options.btime;
+        else if (token == "winc") ss >> options.winc;
+        else if (token == "binc") ss >> options.binc;
+        else if (token == "movestogo") ss >> options.movestogo;
+        else if (token == "depth") ss >> options.maxDepth;
+        else if (token == "nodes") ss >> options.nodes;
+        else if (token == "mate") ss >> options.mate;
+        else if (token == "movetime") ss >> options.movetime;
+        else if (token == "infinite") options.infinite = true;
+      }
+
+      // Launch search in a background thread
+      Board threadBoard = board;
+      searchThread = std::thread([threadBoard, options]() {
+        Search::SearchResult result = Search::analyzeNextMove(threadBoard, options);
         if (result.hasMove) {
           std::cout << "bestmove " << Search::toUci(result.bestMove) << std::endl;
+        } else {
+          std::cout << "bestmove 0000" << std::endl;
         }
-      }
+      });
+    } else if (line == "stop") {
+      stopSearchThread(searchThread);
     } else if (line == "quit") {
+      stopSearchThread(searchThread);
       break;
     }
   }
-
 }

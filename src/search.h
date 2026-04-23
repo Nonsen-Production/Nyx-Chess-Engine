@@ -4,8 +4,12 @@
 #include "types.h"
 #include <vector>
 #include <string>
+#include <atomic>
+#include <chrono>
 
 namespace Search {
+
+extern std::atomic<bool> gStopSearch;
 
 static constexpr int MAX_PLY = 64;
 static constexpr int INF = 1'000'000'000;
@@ -26,10 +30,20 @@ struct SearchStats {
 };
 
 struct SearchOptions {
-  int maxDepth = 4;
+  int maxDepth = 64;
   int minimaxDepth = 2;
   int quiescenceMaxPly = 10;
-  bool enableLogging = true;
+  bool enableLogging = false;
+
+  bool infinite = false;
+  long long wtime = 0;
+  long long btime = 0;
+  long long winc = 0;
+  long long binc = 0;
+  long long movetime = 0;
+  int movestogo = 0;
+  long long nodes = 0;
+  int mate = 0;
 };
 
 struct SearchResult {

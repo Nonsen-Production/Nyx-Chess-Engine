@@ -7,7 +7,7 @@ NNUEWeights gWeights;
 bool init(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary);
   if (!file.is_open()) {
-    std::cerr << "[NNUE] Could not open: " << filename << std::endl;
+    std::cout << "info string NNUE file " << filename << " not found, falling back to hand-crafted evaluation." << std::endl;
     gWeights.loaded = false;
     return false;
   }

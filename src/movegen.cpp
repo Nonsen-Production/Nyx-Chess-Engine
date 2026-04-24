@@ -1,16 +1,14 @@
 #include "movegen.h"
 #include "utils.h"
+#include "bitboard.h"
 #include <cmath>
 
 namespace Chess {
 
 int findKing(const Board &board, bool white) {
-  const int king = white ? 6 : -6;
-  for (int i = 0; i < 64; ++i) {
-    if (board.sqaures[i] == king)
-      return i;
-  }
-  return -1;
+  const std::uint64_t kingBB = board.pieceBitboards[white ? 5 : 11];
+  if (kingBB == 0) return -1;
+  return Bitboards::lsb(kingBB);
 }
 
 bool isPathClear(const Board &board, int from, int to) {
@@ -36,77 +34,34 @@ bool isPathClear(const Board &board, int from, int to) {
 }
 
 bool isSquareAttacked(const Board &board, int square, bool byWhite) {
-  const int targetRow = rowOf(square);
-  const int targetCol = colOf(square);
+  // Pawn attacks
+  const int pawnColor = byWhite ? 1 : 0; // Reverse: white attacks come from white pawns
+  const std::uint64_t pawns = board.pieceBitboards[byWhite ? 0 : 6];
+  // Use reverse lookup: if a pawn of the attacking color can attack this square
+  if (Bitboards::PAWN_ATTACKS[byWhite ? 1 : 0][square] & pawns)
+    return true;
 
-  const int pawn = byWhite ? 1 : -1;
-  const int pawnRow = byWhite ? targetRow - 1 : targetRow + 1;
-  if (pawnRow >= 0 && pawnRow < 8) {
-    if (targetCol > 0 && board.sqaures[pawnRow * 8 + targetCol - 1] == pawn)
-      return true;
-    if (targetCol < 7 && board.sqaures[pawnRow * 8 + targetCol + 1] == pawn)
-      return true;
-  }
+  // Knight attacks
+  const std::uint64_t knights = board.pieceBitboards[byWhite ? 1 : 7];
+  if (Bitboards::KNIGHT_ATTACKS[square] & knights)
+    return true;
 
-  const int knight = byWhite ? 2 : -2;
-  static const int knightOffsets[8][2] = {{2, 1}, {2, -1}, {-2, 1}, {-2, -1},
-                                          {1, 2}, {1, -2}, {-1, 2}, {-1, -2}};
-  for (const auto &offset : knightOffsets) {
-    const int r = targetRow + offset[0];
-    const int c = targetCol + offset[1];
-    if (r >= 0 && r < 8 && c >= 0 && c < 8 &&
-        board.sqaures[r * 8 + c] == knight)
-      return true;
-  }
+  // King attacks
+  const std::uint64_t kings = board.pieceBitboards[byWhite ? 5 : 11];
+  if (Bitboards::KING_ATTACKS[square] & kings)
+    return true;
 
-  const int bishop = byWhite ? 3 : -3;
-  const int rook = byWhite ? 4 : -4;
-  const int queen = byWhite ? 5 : -5;
-  const int king = byWhite ? 6 : -6;
+  // Bishop/Queen attacks (diagonal)
+  const std::uint64_t bishopsQueens =
+      board.pieceBitboards[byWhite ? 2 : 8] | board.pieceBitboards[byWhite ? 4 : 10];
+  if (Bitboards::bishopAttacks(square, board.allPieces) & bishopsQueens)
+    return true;
 
-  static const int diagonalDirs[4][2] = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
-  for (const auto &dir : diagonalDirs) {
-    int r = targetRow + dir[0];
-    int c = targetCol + dir[1];
-    while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-      const int piece = board.sqaures[r * 8 + c];
-      if (piece != 0) {
-        if (piece == bishop || piece == queen)
-          return true;
-        break;
-      }
-      r += dir[0];
-      c += dir[1];
-    }
-  }
-
-  static const int orthogonalDirs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-  for (const auto &dir : orthogonalDirs) {
-    int r = targetRow + dir[0];
-    int c = targetCol + dir[1];
-    while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-      const int piece = board.sqaures[r * 8 + c];
-      if (piece != 0) {
-        if (piece == rook || piece == queen)
-          return true;
-        break;
-      }
-      r += dir[0];
-      c += dir[1];
-    }
-  }
-
-  for (int dr = -1; dr <= 1; ++dr) {
-    for (int dc = -1; dc <= 1; ++dc) {
-      if (dr == 0 && dc == 0)
-        continue;
-      const int r = targetRow + dr;
-      const int c = targetCol + dc;
-      if (r >= 0 && r < 8 && c >= 0 && c < 8 &&
-          board.sqaures[r * 8 + c] == king)
-        return true;
-    }
-  }
+  // Rook/Queen attacks (orthogonal)
+  const std::uint64_t rooksQueens =
+      board.pieceBitboards[byWhite ? 3 : 9] | board.pieceBitboards[byWhite ? 4 : 10];
+  if (Bitboards::rookAttacks(square, board.allPieces) & rooksQueens)
+    return true;
 
   return false;
 }
@@ -267,23 +222,28 @@ bool makeMove(Board &board, int from, int to, int promotionPiece) {
 
   Board previous = board;
 
-  board.sqaures[to] = board.sqaures[from];
-  board.sqaures[from] = 0;
+  // Apply the move using incremental bitboard updates
+  if (isCapture && !enPassantCapture) {
+    // Remove captured piece first, then move
+    board.removePiece(to);
+  }
+  board.movePiece(from, to);
 
   if (enPassantCapture) {
-    board.sqaures[enPassantCapturedSquare] = 0;
+    board.removePiece(enPassantCapturedSquare);
   }
 
   if (castlingMove) {
-    board.sqaures[rookTo] = board.sqaures[rookFrom];
-    board.sqaures[rookFrom] = 0;
+    board.movePiece(rookFrom, rookTo);
   }
 
   if (piece == 1 && (toRow == 0 || toRow == 7)) {
     int promotionType = promotionPiece;
     if (promotionType < 2 || promotionType > 5)
       promotionType = 5;
-    board.sqaures[to] = movingWhite ? promotionType : -promotionType;
+    // Remove the pawn that just moved, put the promoted piece
+    board.removePiece(to);
+    board.putPiece(movingWhite ? promotionType : -promotionType, to);
   }
 
   if (piece == 6) {
@@ -316,7 +276,7 @@ bool makeMove(Board &board, int from, int to, int promotionPiece) {
     return false;
   }
 
-  rebuildBitboards(board);
+  // Bitboards are already up-to-date via incremental updates — no rebuildBitboards() needed
   board.zobristKey = positionHash(board);
   board.positionHistory.push_back(board.zobristKey);
 
@@ -330,29 +290,7 @@ bool makeMove(Board &board, int from, int to, int promotionPiece) {
 bool hasAnyLegalMove(const Board &board, bool white) {
   Board setup = board;
   setup.whiteTurn = white;
-
-  for (int from = 0; from < 64; ++from) {
-    const int piece = setup.sqaures[from];
-    if (piece == 0 || (piece > 0) != white)
-      continue;
-
-    for (int to = 0; to < 64; ++to) {
-      Board attempt = setup;
-      if (makeMove(attempt, from, to))
-        return true;
-
-      if (std::abs(piece) == 1 &&
-          ((white && rowOf(to) == 7) || (!white && rowOf(to) == 0))) {
-        for (int promotion = 2; promotion <= 4; ++promotion) {
-          Board promotionAttempt = setup;
-          if (makeMove(promotionAttempt, from, to, promotion))
-            return true;
-        }
-      }
-    }
-  }
-
-  return false;
+  return !generateLegalMoves(setup, false).empty();
 }
 
 bool isCheckmate(const Board &board, bool white) {
@@ -378,59 +316,37 @@ bool isThreefoldRepetitionDraw(const Board &board) {
 }
 
 bool isInsufficientMaterialDraw(const Board &board) {
-  int whiteBishops = 0;
-  int blackBishops = 0;
-  int whiteKnights = 0;
-  int blackKnights = 0;
-  int whiteBishopColor = -1;
-  int blackBishopColor = -1;
+  // If any pawns, rooks, or queens exist, not insufficient
+  if (board.pieceBitboards[0] || board.pieceBitboards[6])  return false; // Pawns
+  if (board.pieceBitboards[3] || board.pieceBitboards[9])  return false; // Rooks
+  if (board.pieceBitboards[4] || board.pieceBitboards[10]) return false; // Queens
 
-  for (int i = 0; i < 64; ++i) {
-    const int piece = board.sqaures[i];
-    if (piece == 0)
-      continue;
+  int whiteKnights = Bitboards::popcount(board.pieceBitboards[1]);
+  int whiteBishops = Bitboards::popcount(board.pieceBitboards[2]);
+  int blackKnights = Bitboards::popcount(board.pieceBitboards[7]);
+  int blackBishops = Bitboards::popcount(board.pieceBitboards[8]);
 
-    const int type = std::abs(piece);
-    if (type == 1 || type == 4 || type == 5)
-      return false;
+  int whiteMinor = whiteKnights + whiteBishops;
+  int blackMinor = blackKnights + blackBishops;
 
-    if (type == 3) {
-      const int squareColor = (rowOf(i) + colOf(i)) % 2;
-      if (piece > 0) {
-        ++whiteBishops;
-        whiteBishopColor = squareColor;
-      } else {
-        ++blackBishops;
-        blackBishopColor = squareColor;
-      }
-    }
+  // K vs K
+  if (whiteMinor == 0 && blackMinor == 0) return true;
+  // KN vs K or KB vs K
+  if (whiteMinor == 1 && blackMinor == 0) return true;
+  if (whiteMinor == 0 && blackMinor == 1) return true;
+  // KNN vs K
+  if (whiteKnights == 2 && whiteBishops == 0 && blackMinor == 0) return true;
+  if (blackKnights == 2 && blackBishops == 0 && whiteMinor == 0) return true;
 
-    if (type == 2) {
-      if (piece > 0) {
-        ++whiteKnights;
-      } else {
-        ++blackKnights;
-      }
-    }
-  }
-
-  const int whiteMinor = whiteBishops + whiteKnights;
-  const int blackMinor = blackBishops + blackKnights;
-
-  if (whiteMinor == 0 && blackMinor == 0)
-    return true;
-  if (whiteMinor == 1 && blackMinor == 0)
-    return true;
-  if (whiteMinor == 0 && blackMinor == 1)
-    return true;
-  if (whiteKnights == 2 && whiteBishops == 0 && blackMinor == 0)
-    return true;
-  if (blackKnights == 2 && blackBishops == 0 && whiteMinor == 0)
-    return true;
-
-  if (whiteKnights == 0 && blackKnights == 0 && whiteBishops == 1 &&
-      blackBishops == 1 && whiteBishopColor == blackBishopColor) {
-    return true;
+  // KB vs KB (same color bishops)
+  if (whiteKnights == 0 && blackKnights == 0 &&
+      whiteBishops == 1 && blackBishops == 1) {
+    // Find bishop square colors via bitboard
+    int wbSq = Bitboards::lsb(board.pieceBitboards[2]);
+    int bbSq = Bitboards::lsb(board.pieceBitboards[8]);
+    int wbColor = (Chess::rowOf(wbSq) + Chess::colOf(wbSq)) % 2;
+    int bbColor = (Chess::rowOf(bbSq) + Chess::colOf(bbSq)) % 2;
+    if (wbColor == bbColor) return true;
   }
 
   return false;
@@ -443,31 +359,7 @@ bool isDraw(const Board &board) {
 int countLegalMoves(const Board &board, bool white) {
   Board setup = board;
   setup.whiteTurn = white;
-
-  int legalMoves = 0;
-
-  for (int from = 0; from < 64; ++from) {
-    const int piece = setup.sqaures[from];
-    if (piece == 0 || (piece > 0) != white)
-      continue;
-
-    for (int to = 0; to < 64; ++to) {
-      if (std::abs(piece) == 1 && ((white && Chess::rowOf(to) == 7) ||
-                                   (!white && Chess::rowOf(to) == 0))) {
-        for (int promotion = 2; promotion <= 5; ++promotion) {
-          Board attempt = setup;
-          if (Chess::makeMove(attempt, from, to, promotion))
-            ++legalMoves;
-        }
-      } else {
-        Board attempt = setup;
-        if (Chess::makeMove(attempt, from, to))
-          ++legalMoves;
-      }
-    }
-  }
-
-  return legalMoves;
+  return static_cast<int>(generateLegalMoves(setup, false).size());
 }
 int popLeastSignificantBit(std::uint64_t &bitboard) {
   const int square = __builtin_ctzll(static_cast<unsigned long long>(bitboard));
@@ -567,102 +459,70 @@ std::vector<Move> generateLegalMoves(const Board &board, bool capturesOnly) {
         }
       }
 
-      if (col > 0) {
-        const int leftCapture = from + (whiteToMove ? 7 : -9);
-        if (Chess::isInside(leftCapture) &&
-            ((enemyOcc & (1ULL << leftCapture)) ||
-             leftCapture == board.enPassantSquare)) {
-          tryAddMove(from, leftCapture, pieceType);
-        }
+      // Pawn captures using attack tables
+      std::uint64_t pawnAtk = Bitboards::PAWN_ATTACKS[whiteToMove ? 0 : 1][from];
+      std::uint64_t pawnCaptures = pawnAtk & enemyOcc;
+      // Add en passant square
+      if (board.enPassantSquare >= 0 &&
+          (pawnAtk & (1ULL << board.enPassantSquare))) {
+        pawnCaptures |= 1ULL << board.enPassantSquare;
       }
-      if (col < 7) {
-        const int rightCapture = from + (whiteToMove ? 9 : -7);
-        if (Chess::isInside(rightCapture) &&
-            ((enemyOcc & (1ULL << rightCapture)) ||
-             rightCapture == board.enPassantSquare)) {
-          tryAddMove(from, rightCapture, pieceType);
-        }
+      while (pawnCaptures) {
+        int to = Bitboards::popLSB(pawnCaptures);
+        tryAddMove(from, to, pieceType);
       }
       break;
     }
     case 2: {
-      for (const auto &offset : knightOffsets) {
-        const int r = row + offset[0];
-        const int c = col + offset[1];
-        if (r < 0 || r > 7 || c < 0 || c > 7)
-          continue;
-        tryAddMove(from, r * 8 + c, pieceType);
+      // Knight moves via lookup table
+      std::uint64_t targets = Bitboards::KNIGHT_ATTACKS[from] & ~friendlyOcc;
+      if (capturesOnly) targets &= enemyOcc;
+      while (targets) {
+        int to = Bitboards::popLSB(targets);
+        tryAddMove(from, to, pieceType);
       }
       break;
     }
-    case 3:
-    case 4:
-    case 5: {
-      const int (*dirs)[2] = (pieceType == 3) ? bishopDirs : rookDirs;
-      const int dirCount = 4;
-
-      for (int d = 0; d < dirCount; ++d) {
-        int r = row + dirs[d][0];
-        int c = col + dirs[d][1];
-
-        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-          const int to = r * 8 + c;
-          const std::uint64_t bit = 1ULL << to;
-
-          if (friendlyOcc & bit)
-            break;
-
-          if (enemyOcc & bit) {
-            tryAddMove(from, to, pieceType);
-            break;
-          }
-
-          if (!capturesOnly) {
-            tryAddMove(from, to, pieceType);
-          }
-
-          r += dirs[d][0];
-          c += dirs[d][1];
-        }
+    case 3: {
+      // Bishop moves via attack generation
+      std::uint64_t targets = Bitboards::bishopAttacks(from, board.allPieces) & ~friendlyOcc;
+      if (capturesOnly) targets &= enemyOcc;
+      while (targets) {
+        int to = Bitboards::popLSB(targets);
+        tryAddMove(from, to, pieceType);
       }
-
-      if (pieceType == 5) {
-        for (int d = 0; d < 4; ++d) {
-          int r = row + bishopDirs[d][0];
-          int c = col + bishopDirs[d][1];
-
-          while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-            const int to = r * 8 + c;
-            const std::uint64_t bit = 1ULL << to;
-
-            if (friendlyOcc & bit)
-              break;
-
-            if (enemyOcc & bit) {
-              tryAddMove(from, to, pieceType);
-              break;
-            }
-
-            if (!capturesOnly) {
-              tryAddMove(from, to, pieceType);
-            }
-
-            r += bishopDirs[d][0];
-            c += bishopDirs[d][1];
-          }
-        }
+      break;
+    }
+    case 4: {
+      // Rook moves via attack generation
+      std::uint64_t targets = Bitboards::rookAttacks(from, board.allPieces) & ~friendlyOcc;
+      if (capturesOnly) targets &= enemyOcc;
+      while (targets) {
+        int to = Bitboards::popLSB(targets);
+        tryAddMove(from, to, pieceType);
+      }
+      break;
+    }
+    case 5: {
+      // Queen moves via attack generation
+      std::uint64_t targets = Bitboards::queenAttacks(from, board.allPieces) & ~friendlyOcc;
+      if (capturesOnly) targets &= enemyOcc;
+      while (targets) {
+        int to = Bitboards::popLSB(targets);
+        tryAddMove(from, to, pieceType);
       }
       break;
     }
     case 6: {
-      for (const auto &offset : kingOffsets) {
-        const int r = row + offset[0];
-        const int c = col + offset[1];
-        if (r < 0 || r > 7 || c < 0 || c > 7)
-          continue;
-        tryAddMove(from, r * 8 + c, pieceType);
+      // King moves via lookup table
+      std::uint64_t targets = Bitboards::KING_ATTACKS[from] & ~friendlyOcc;
+      if (capturesOnly) targets &= enemyOcc;
+      while (targets) {
+        int to = Bitboards::popLSB(targets);
+        tryAddMove(from, to, pieceType);
       }
 
+      // Castling
       if (!capturesOnly) {
         tryAddMove(from, from + 2, pieceType);
         tryAddMove(from, from - 2, pieceType);

@@ -4,11 +4,15 @@
 #include "utils.h"
 #include <algorithm>
 #include <iostream>
+#include <vector>
+#include <thread>
+#include <mutex>
 
 
 namespace Search {
 
 std::atomic<bool> gStopSearch{false};
+int gNumThreads = 1;
 
 class TimeManager {
   std::chrono::time_point<std::chrono::steady_clock> startTime;
@@ -551,9 +555,12 @@ std::string getPV(const Board& rootBoard, int depth) {
 }
 
 SearchResult runIterativeDeepening(const Board &rootBoard, SearchState &state,
-                                    const SearchOptions &options) {
-  gStopSearch = false;
-  gTimeManager.start(options, rootBoard.whiteTurn);
+                                    const SearchOptions &options,
+                                    bool isMainThread = true) {
+  if (isMainThread) {
+    gStopSearch = false;
+    gTimeManager.start(options, rootBoard.whiteTurn);
+  }
 
   SearchResult finalResult;
   SearchStats totalStats;
@@ -605,19 +612,22 @@ SearchResult runIterativeDeepening(const Board &rootBoard, SearchState &state,
     totalStats.ttCutoffs += iteration.stats.ttCutoffs;
     totalStats.ttStores += iteration.stats.ttStores;
 
-    long long elapsed = gTimeManager.elapsed();
-    if (elapsed == 0) elapsed = 1; // avoid div by zero
-    long long nps = (totalStats.nodes * 1000) / elapsed;
-    
-    std::string pv = getPV(rootBoard, depth);
-    
-    std::cout << "info depth " << depth 
-              << " score cp " << iteration.scoreForSideToMove 
-              << " nodes " << totalStats.nodes
-              << " nps " << nps
-              << " time " << elapsed
-              << " pv " << pv << std::endl;
-              
+    // Only main thread prints info lines
+    if (isMainThread) {
+      long long elapsed = gTimeManager.elapsed();
+      if (elapsed == 0) elapsed = 1;
+      long long nps = (totalStats.nodes * 1000) / elapsed;
+
+      std::string pv = getPV(rootBoard, depth);
+
+      std::cout << "info depth " << depth
+                << " score cp " << iteration.scoreForSideToMove
+                << " nodes " << totalStats.nodes
+                << " nps " << nps
+                << " time " << elapsed
+                << " pv " << pv << std::endl;
+    }
+
     if (options.nodes > 0 && totalStats.nodes >= options.nodes) {
         gStopSearch = true;
         break;
@@ -633,10 +643,34 @@ SearchResult analyzeNextMove(const Board &board, const SearchOptions &options) {
     std::cout << "[Search] Enabled: AlphaBeta, IterativeDeepening, Quiescence, "
                  "MVV-LVA, Killer, History, CheckExt, NullMove, LMR"
               << '\n';
+    if (gNumThreads > 1) {
+      std::cout << "[Search] Lazy SMP with " << gNumThreads << " threads" << '\n';
+    }
   }
 
-  SearchState state;
-  SearchResult result = runIterativeDeepening(board, state, options);
+  // === Lazy SMP: spawn helper threads ===
+  int numHelpers = gNumThreads - 1; // Thread 0 is this (main) thread
+  std::vector<std::thread> helperThreads;
+  helperThreads.reserve(numHelpers);
+
+  // Helper threads run their own independent search
+  for (int i = 0; i < numHelpers; ++i) {
+    helperThreads.emplace_back([&board, &options]() {
+      SearchState helperState;
+      // Helper threads search silently (isMainThread = false)
+      runIterativeDeepening(board, helperState, options, false);
+    });
+  }
+
+  // Main thread runs the search and reports info lines
+  SearchState mainState;
+  SearchResult result = runIterativeDeepening(board, mainState, options, true);
+
+  // Signal all helpers to stop and wait for them
+  gStopSearch = true;
+  for (auto &t : helperThreads) {
+    if (t.joinable()) t.join();
+  }
 
   if (options.enableLogging && result.hasMove) {
     std::cout << "[Stats] nodes=" << result.stats.nodes

@@ -13,12 +13,16 @@
 
 #include "nnue.h"
 #include "book.h"
+#include "bitboard.h"
 #include "uci.h"
 #include <string>
 
 std::string gGameMovesUCI;
 
 int main() {
+  // Initialize bitboard attack tables
+  Bitboards::init();
+
   // Initialize NNUE neural network
   NNUE::init("nn-nyx.nnue");
 

@@ -255,3 +255,74 @@ void Board::printBoard() const {
     std::cout << '\n';
   }
 }
+
+int Board::pieceOn(int square) const {
+  return sqaures[square];
+}
+
+int Board::pieceTypeOn(int square) const {
+  return std::abs(sqaures[square]);
+}
+
+void Board::putPiece(int piece, int square) {
+  sqaures[square] = piece;
+  const std::uint64_t bit = 1ULL << square;
+  int idx = Chess::pieceToIndex(piece);
+  if (idx >= 0) {
+    pieceBitboards[idx] |= bit;
+  }
+  if (piece > 0) {
+    whitePieces |= bit;
+  } else if (piece < 0) {
+    blackPieces |= bit;
+  }
+  allPieces = whitePieces | blackPieces;
+}
+
+void Board::removePiece(int square) {
+  int piece = sqaures[square];
+  if (piece == 0) return;
+
+  const std::uint64_t bit = 1ULL << square;
+  int idx = Chess::pieceToIndex(piece);
+  if (idx >= 0) {
+    pieceBitboards[idx] &= ~bit;
+  }
+  if (piece > 0) {
+    whitePieces &= ~bit;
+  } else {
+    blackPieces &= ~bit;
+  }
+  allPieces = whitePieces | blackPieces;
+  sqaures[square] = 0;
+}
+
+void Board::movePiece(int from, int to) {
+  // Remove any captured piece on destination
+  if (sqaures[to] != 0) {
+    removePiece(to);
+  }
+
+  int piece = sqaures[from];
+  const std::uint64_t fromBit = 1ULL << from;
+  const std::uint64_t toBit = 1ULL << to;
+  const std::uint64_t fromTo = fromBit | toBit;
+
+  // Update bitboard for this piece type
+  int idx = Chess::pieceToIndex(piece);
+  if (idx >= 0) {
+    pieceBitboards[idx] ^= fromTo;
+  }
+
+  // Update color aggregate bitboard
+  if (piece > 0) {
+    whitePieces ^= fromTo;
+  } else if (piece < 0) {
+    blackPieces ^= fromTo;
+  }
+  allPieces = whitePieces | blackPieces;
+
+  // Update mailbox
+  sqaures[to] = piece;
+  sqaures[from] = 0;
+}

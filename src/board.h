@@ -29,6 +29,13 @@ struct Board {
 
   Board();
   void printBoard() const;
+
+  // Bitboard-aware piece manipulation (updates both sqaures[] and bitboards)
+  int pieceOn(int square) const;          // Returns piece value at square
+  int pieceTypeOn(int square) const;      // Returns abs(piece) at square
+  void putPiece(int piece, int square);   // Place piece (updates mailbox + bitboards)
+  void removePiece(int square);           // Remove piece (updates mailbox + bitboards)
+  void movePiece(int from, int to);       // Move piece from->to (updates mailbox + bitboards)
 };
 
 namespace Chess {

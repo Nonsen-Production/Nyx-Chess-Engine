@@ -6,10 +6,12 @@
 #include <string>
 #include <atomic>
 #include <chrono>
+#include <thread>
 
 namespace Search {
 
 extern std::atomic<bool> gStopSearch;
+extern int gNumThreads;  // Number of search threads (Lazy SMP)
 
 static constexpr int MAX_PLY = 64;
 static constexpr int INF = 1'000'000'000;

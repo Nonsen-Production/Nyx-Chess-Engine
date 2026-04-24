@@ -1,6 +1,7 @@
 #include "eval.h"
 #include "utils.h"
 #include "movegen.h"
+#include "bitboard.h"
 #include <algorithm>
 #include <cmath>
 
@@ -319,89 +320,46 @@ int evaluateKingSafety(const Board &board, bool white, int phase) {
     }
 
     // === Attacker Counting (key king safety concept) ===
-    // Count enemy pieces attacking the king zone (king + surrounding 8 squares)
-    static const int kingZoneDirs[9][2] = {
-        {0, 0}, {1, 0}, {1, 1}, {0, 1}, {-1, 1},
-        {-1, 0}, {-1, -1}, {0, -1}, {1, -1}};
+    // Use bitboard attack tables to find king zone attackers
+    std::uint64_t kingZone = Bitboards::KING_ATTACKS[kingSquare] | (1ULL << kingSquare);
 
-    std::uint64_t kingZone = 0;
-    for (const auto &d : kingZoneDirs) {
-      int r = kingRank + d[0];
-      int c = kingFile + d[1];
-      if (r >= 0 && r < 8 && c >= 0 && c < 8) {
-        kingZone |= 1ULL << (r * 8 + c);
+    // Knights attacking king zone
+    std::uint64_t enemyKnights = board.pieceBitboards[white ? 7 : 1];
+    std::uint64_t kn = enemyKnights;
+    while (kn) {
+      int sq = Bitboards::popLSB(kn);
+      if (Bitboards::KNIGHT_ATTACKS[sq] & kingZone) {
+        ++attackerCount; attackWeight += 20;
       }
     }
 
-    // Check each enemy piece for attacks on king zone
-    std::uint64_t enemies = enemyPieces;
-    while (enemies) {
-      const int sq = __builtin_ctzll(static_cast<unsigned long long>(enemies));
-      enemies &= enemies - 1;
-      const int enemyType = std::abs(board.sqaures[sq]);
-      const int er = Chess::rowOf(sq);
-      const int ec = Chess::colOf(sq);
+    // Bishops attacking king zone
+    std::uint64_t enemyBishops = board.pieceBitboards[white ? 8 : 2];
+    std::uint64_t bi = enemyBishops;
+    while (bi) {
+      int sq = Bitboards::popLSB(bi);
+      if (Bitboards::bishopAttacks(sq, board.allPieces) & kingZone) {
+        ++attackerCount; attackWeight += 20;
+      }
+    }
 
-      bool attacksKingZone = false;
+    // Rooks attacking king zone
+    std::uint64_t enemyRooks = board.pieceBitboards[white ? 9 : 3];
+    std::uint64_t ro = enemyRooks;
+    while (ro) {
+      int sq = Bitboards::popLSB(ro);
+      if (Bitboards::rookAttacks(sq, board.allPieces) & kingZone) {
+        ++attackerCount; attackWeight += 40;
+      }
+    }
 
-      switch (enemyType) {
-      case 2: { // Knight
-        static const int knightOff[8][2] = {{2,1},{2,-1},{-2,1},{-2,-1},{1,2},{1,-2},{-1,2},{-1,-2}};
-        for (const auto &off : knightOff) {
-          int r = er + off[0], c = ec + off[1];
-          if (r >= 0 && r < 8 && c >= 0 && c < 8) {
-            if (kingZone & (1ULL << (r * 8 + c))) { attacksKingZone = true; break; }
-          }
-        }
-        if (attacksKingZone) { ++attackerCount; attackWeight += 20; }
-        break;
-      }
-      case 3: { // Bishop
-        static const int bDirs[4][2] = {{1,1},{1,-1},{-1,1},{-1,-1}};
-        for (const auto &dir : bDirs) {
-          int r = er + dir[0], c = ec + dir[1];
-          while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-            int to = r * 8 + c;
-            if (kingZone & (1ULL << to)) { attacksKingZone = true; break; }
-            if (board.allPieces & (1ULL << to)) break;
-            r += dir[0]; c += dir[1];
-          }
-          if (attacksKingZone) break;
-        }
-        if (attacksKingZone) { ++attackerCount; attackWeight += 20; }
-        break;
-      }
-      case 4: { // Rook
-        static const int rDirs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
-        for (const auto &dir : rDirs) {
-          int r = er + dir[0], c = ec + dir[1];
-          while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-            int to = r * 8 + c;
-            if (kingZone & (1ULL << to)) { attacksKingZone = true; break; }
-            if (board.allPieces & (1ULL << to)) break;
-            r += dir[0]; c += dir[1];
-          }
-          if (attacksKingZone) break;
-        }
-        if (attacksKingZone) { ++attackerCount; attackWeight += 40; }
-        break;
-      }
-      case 5: { // Queen
-        static const int qDirs[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}};
-        for (const auto &dir : qDirs) {
-          int r = er + dir[0], c = ec + dir[1];
-          while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-            int to = r * 8 + c;
-            if (kingZone & (1ULL << to)) { attacksKingZone = true; break; }
-            if (board.allPieces & (1ULL << to)) break;
-            r += dir[0]; c += dir[1];
-          }
-          if (attacksKingZone) break;
-        }
-        if (attacksKingZone) { ++attackerCount; attackWeight += 80; }
-        break;
-      }
-      default: break;
+    // Queens attacking king zone
+    std::uint64_t enemyQueens = board.pieceBitboards[white ? 10 : 4];
+    std::uint64_t qu = enemyQueens;
+    while (qu) {
+      int sq = Bitboards::popLSB(qu);
+      if (Bitboards::queenAttacks(sq, board.allPieces) & kingZone) {
+        ++attackerCount; attackWeight += 80;
       }
     }
 
@@ -456,128 +414,48 @@ int evaluateKingSafety(const Board &board, bool white, int phase) {
 int evaluateMobility(const Board &board, bool white) {
   int score = 0;
   const std::uint64_t friendlyOcc = white ? board.whitePieces : board.blackPieces;
-  const std::uint64_t allOcc = board.allPieces;
-
-  static const int bishopDirs[4][2] = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
-  static const int rookDirs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-  static const int knightOffsets[8][2] = {{2, 1}, {2, -1}, {-2, 1}, {-2, -1},
-                                          {1, 2}, {1, -2}, {-1, 2}, {-1, -2}};
 
   // Center control bonus
-  static const int centerSquares[4] = {27, 28, 35, 36}; // d4, e4, d5, e5
+  static constexpr std::uint64_t CENTER_MASK = (1ULL << 27) | (1ULL << 28) | (1ULL << 35) | (1ULL << 36);
   const std::uint64_t friendlyPawns = board.pieceBitboards[white ? 0 : 6];
-  for (int cs : centerSquares) {
-    if (friendlyPawns & (1ULL << cs)) {
-      score += 15; // Pawn on center
-    }
+  score += Bitboards::popcount(friendlyPawns & CENTER_MASK) * 15;
+
+  // Knights
+  std::uint64_t knights = board.pieceBitboards[white ? 1 : 7];
+  while (knights) {
+    int sq = Bitboards::popLSB(knights);
+    std::uint64_t attacks = Bitboards::KNIGHT_ATTACKS[sq] & ~friendlyOcc;
+    int mobility = Bitboards::popcount(attacks);
+    score += mobility * 4;
+    score += Bitboards::popcount(attacks & CENTER_MASK) * 3;
   }
 
-  std::uint64_t pieces = white ? board.whitePieces : board.blackPieces;
-  while (pieces) {
-    const int from = __builtin_ctzll(static_cast<unsigned long long>(pieces));
-    pieces &= pieces - 1;
+  // Bishops
+  std::uint64_t bishops = board.pieceBitboards[white ? 2 : 8];
+  while (bishops) {
+    int sq = Bitboards::popLSB(bishops);
+    std::uint64_t attacks = Bitboards::bishopAttacks(sq, board.allPieces) & ~friendlyOcc;
+    int mobility = Bitboards::popcount(attacks);
+    score += mobility * 3;
+    score += Bitboards::popcount(attacks & CENTER_MASK) * 3;
+  }
 
-    const int piece = board.sqaures[from];
-    const int pieceType = std::abs(piece);
-    const int row = Chess::rowOf(from);
-    const int col = Chess::colOf(from);
-    int mobility = 0;
+  // Rooks
+  std::uint64_t rooks = board.pieceBitboards[white ? 3 : 9];
+  while (rooks) {
+    int sq = Bitboards::popLSB(rooks);
+    std::uint64_t attacks = Bitboards::rookAttacks(sq, board.allPieces) & ~friendlyOcc;
+    int mobility = Bitboards::popcount(attacks);
+    score += mobility * 2;
+  }
 
-    switch (pieceType) {
-    case 2: { // Knight
-      for (const auto &offset : knightOffsets) {
-        const int r = row + offset[0];
-        const int c = col + offset[1];
-        if (r >= 0 && r < 8 && c >= 0 && c < 8) {
-          const int to = r * 8 + c;
-          if (!(friendlyOcc & (1ULL << to))) {
-            ++mobility;
-            // Center control bonus for attacking center
-            if (to == 27 || to == 28 || to == 35 || to == 36)
-              score += 3;
-          }
-        }
-      }
-      score += mobility * 4;
-      break;
-    }
-    case 3: { // Bishop
-      for (const auto &dir : bishopDirs) {
-        int r = row + dir[0];
-        int c = col + dir[1];
-        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-          const int to = r * 8 + c;
-          const std::uint64_t bit = 1ULL << to;
-          if (friendlyOcc & bit)
-            break;
-          ++mobility;
-          if (to == 27 || to == 28 || to == 35 || to == 36)
-            score += 3;
-          if (allOcc & bit)
-            break;
-          r += dir[0];
-          c += dir[1];
-        }
-      }
-      score += mobility * 3;
-      break;
-    }
-    case 4: { // Rook
-      for (const auto &dir : rookDirs) {
-        int r = row + dir[0];
-        int c = col + dir[1];
-        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-          const int to = r * 8 + c;
-          const std::uint64_t bit = 1ULL << to;
-          if (friendlyOcc & bit)
-            break;
-          ++mobility;
-          if (allOcc & bit)
-            break;
-          r += dir[0];
-          c += dir[1];
-        }
-      }
-      score += mobility * 2;
-      break;
-    }
-    case 5: { // Queen
-      for (const auto &dir : bishopDirs) {
-        int r = row + dir[0];
-        int c = col + dir[1];
-        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-          const int to = r * 8 + c;
-          const std::uint64_t bit = 1ULL << to;
-          if (friendlyOcc & bit)
-            break;
-          ++mobility;
-          if (allOcc & bit)
-            break;
-          r += dir[0];
-          c += dir[1];
-        }
-      }
-      for (const auto &dir : rookDirs) {
-        int r = row + dir[0];
-        int c = col + dir[1];
-        while (r >= 0 && r < 8 && c >= 0 && c < 8) {
-          const int to = r * 8 + c;
-          const std::uint64_t bit = 1ULL << to;
-          if (friendlyOcc & bit)
-            break;
-          ++mobility;
-          if (allOcc & bit)
-            break;
-          r += dir[0];
-          c += dir[1];
-        }
-      }
-      score += mobility * 1;
-      break;
-    }
-    default:
-      break;
-    }
+  // Queens
+  std::uint64_t queens = board.pieceBitboards[white ? 4 : 10];
+  while (queens) {
+    int sq = Bitboards::popLSB(queens);
+    std::uint64_t attacks = Bitboards::queenAttacks(sq, board.allPieces) & ~friendlyOcc;
+    int mobility = Bitboards::popcount(attacks);
+    score += mobility * 1;
   }
 
   return score;

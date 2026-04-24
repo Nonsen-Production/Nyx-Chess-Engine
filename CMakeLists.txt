@@ -25,6 +25,7 @@ set(SOURCES
     src/uci.cpp
     src/nnue.cpp
     src/book.cpp
+    src/bitboard.cpp
 )
 
 # Create the executable

@@ -11,8 +11,15 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -DNDEBUG")
+  if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /DNDEBUG")
+  else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -flto -DNDEBUG")
+  endif()
 endif()
+
+# Threading support for Lazy SMP
+find_package(Threads REQUIRED)
 
 # Gather source files from the src directory
 set(SOURCES
@@ -30,6 +37,9 @@ set(SOURCES
 
 # Create the executable
 add_executable(nyx ${SOURCES})
+
+# Link threading library (Lazy SMP)
+target_link_libraries(nyx PRIVATE Threads::Threads)
 
 # Specify include directories so headers can be found
 target_include_directories(nyx PRIVATE src)

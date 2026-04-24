@@ -192,7 +192,7 @@ int evaluatePawnStructure(const Board &board, bool white) {
   int score = 0;
 
   for (int file = 0; file < 8; ++file) {
-    const int count = __builtin_popcountll(
+    const int count = Bitboards::popcount(
         static_cast<unsigned long long>(pawns & FILE_MASKS[file]));
     if (count > 1) {
       score -= 14 * (count - 1); // doubled pawn penalty
@@ -204,7 +204,7 @@ int evaluatePawnStructure(const Board &board, bool white) {
 
   while (iterator) {
     const int square =
-        __builtin_ctzll(static_cast<unsigned long long>(iterator));
+        Bitboards::lsb(iterator);
     iterator &= iterator - 1;
 
     const int file = Chess::colOf(square);
@@ -308,7 +308,7 @@ int evaluateKingSafety(const Board &board, bool white, int phase) {
       if (f < 0 || f > 7) continue;
       std::uint64_t filePawns = enemyPawns & FILE_MASKS[f];
       while (filePawns) {
-        const int sq = __builtin_ctzll(static_cast<unsigned long long>(filePawns));
+        const int sq = Bitboards::lsb(filePawns);
         filePawns &= filePawns - 1;
         const int pawnRank = Chess::rowOf(sq);
         int dist = white ? (pawnRank - kingRank) : (kingRank - pawnRank);
@@ -468,17 +468,17 @@ int evaluateEndgame(const Board &board, int score, int phase) {
   if (phase > 10) return score;
 
   // Count material
-  int wPawns = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[0]));
-  int wKnights = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[1]));
-  int wBishops = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[2]));
-  int wRooks = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[3]));
-  int wQueens = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[4]));
+  int wPawns = Bitboards::popcount(board.pieceBitboards[0]);
+  int wKnights = Bitboards::popcount(board.pieceBitboards[1]);
+  int wBishops = Bitboards::popcount(board.pieceBitboards[2]);
+  int wRooks = Bitboards::popcount(board.pieceBitboards[3]);
+  int wQueens = Bitboards::popcount(board.pieceBitboards[4]);
 
-  int bPawns = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[6]));
-  int bKnights = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[7]));
-  int bBishops = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[8]));
-  int bRooks = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[9]));
-  int bQueens = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[10]));
+  int bPawns = Bitboards::popcount(board.pieceBitboards[6]);
+  int bKnights = Bitboards::popcount(board.pieceBitboards[7]);
+  int bBishops = Bitboards::popcount(board.pieceBitboards[8]);
+  int bRooks = Bitboards::popcount(board.pieceBitboards[9]);
+  int bQueens = Bitboards::popcount(board.pieceBitboards[10]);
 
   int wMinor = wKnights + wBishops;
   int bMinor = bKnights + bBishops;
@@ -541,7 +541,7 @@ int evaluateEndgame(const Board &board, int score, int phase) {
     // Bonus for king near passed pawns
     std::uint64_t wPawnBB = board.pieceBitboards[0];
     while (wPawnBB) {
-      int sq = __builtin_ctzll(static_cast<unsigned long long>(wPawnBB));
+      int sq = Bitboards::lsb(wPawnBB);
       wPawnBB &= wPawnBB - 1;
       if (isPassedPawn(sq, true, board.pieceBitboards[6])) {
         int pawnRank = Chess::rowOf(sq);
@@ -560,7 +560,7 @@ int evaluateEndgame(const Board &board, int score, int phase) {
 
     std::uint64_t bPawnBB = board.pieceBitboards[6];
     while (bPawnBB) {
-      int sq = __builtin_ctzll(static_cast<unsigned long long>(bPawnBB));
+      int sq = Bitboards::lsb(bPawnBB);
       bPawnBB &= bPawnBB - 1;
       if (isPassedPawn(sq, false, board.pieceBitboards[0])) {
         int pawnRank = Chess::rowOf(sq);
@@ -582,14 +582,14 @@ int evaluateEndgame(const Board &board, int score, int phase) {
     // Rook on 7th rank bonus
     std::uint64_t wRookBB = board.pieceBitboards[3];
     while (wRookBB) {
-      int sq = __builtin_ctzll(static_cast<unsigned long long>(wRookBB));
+      int sq = Bitboards::lsb(wRookBB);
       wRookBB &= wRookBB - 1;
       if (Chess::rowOf(sq) == 6) score += 30; // Rook on 7th
       // Rook behind passed pawn
       int rookFile = Chess::colOf(sq);
       std::uint64_t filePawns = board.pieceBitboards[0] & FILE_MASKS[rookFile];
       while (filePawns) {
-        int pSq = __builtin_ctzll(static_cast<unsigned long long>(filePawns));
+        int pSq = Bitboards::lsb(filePawns);
         filePawns &= filePawns - 1;
         if (isPassedPawn(pSq, true, board.pieceBitboards[6]) &&
             Chess::rowOf(sq) < Chess::rowOf(pSq)) {
@@ -600,13 +600,13 @@ int evaluateEndgame(const Board &board, int score, int phase) {
 
     std::uint64_t bRookBB = board.pieceBitboards[9];
     while (bRookBB) {
-      int sq = __builtin_ctzll(static_cast<unsigned long long>(bRookBB));
+      int sq = Bitboards::lsb(bRookBB);
       bRookBB &= bRookBB - 1;
       if (Chess::rowOf(sq) == 1) score -= 30; // Rook on 2nd
       int rookFile = Chess::colOf(sq);
       std::uint64_t filePawns = board.pieceBitboards[6] & FILE_MASKS[rookFile];
       while (filePawns) {
-        int pSq = __builtin_ctzll(static_cast<unsigned long long>(filePawns));
+        int pSq = Bitboards::lsb(filePawns);
         filePawns &= filePawns - 1;
         if (isPassedPawn(pSq, false, board.pieceBitboards[0]) &&
             Chess::rowOf(sq) > Chess::rowOf(pSq)) {
@@ -715,8 +715,15 @@ int evaluateStaticHCE(const Board &board) {
 
 int evaluateStatic(const Board &board) {
   // Use NNUE evaluation when available
-  if (NNUE::isReady() && board.nnueAccumulator.valid) {
-    return NNUE::evaluate(board.nnueAccumulator, board.whiteTurn);
+  if (NNUE::isReady()) {
+    // Lazily compute accumulator on demand
+    if (!board.nnueAccumulator.valid) {
+      NNUE::computeAccumulator(
+          const_cast<Board &>(board).nnueAccumulator, board.sqaures);
+    }
+    if (board.nnueAccumulator.valid) {
+      return NNUE::evaluate(board.nnueAccumulator, board.whiteTurn);
+    }
   }
   // Fallback to hand-crafted evaluation
   return evaluateStaticHCE(board);

@@ -6,7 +6,6 @@
 #include <iostream>
 #include <vector>
 #include <thread>
-#include <mutex>
 
 
 namespace Search {

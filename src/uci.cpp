@@ -147,7 +147,8 @@ void uciLoop() {
 
     if (line == "uci") {
       std::cout << "id name Nyx" << std::endl;
-      std::cout << "id author Nyx Team" << std::endl;
+      std::cout << "id author Nonsen-Production" << std::endl;
+      std::cout << "option name Threads type spin default 1 min 1 max 256" << std::endl;
       std::cout << "option name OwnBook type check default true" << std::endl;
       std::cout << "option name EvalFile type string default nn-nyx.nnue" << std::endl;
       std::cout << "uciok" << std::endl;
@@ -169,7 +170,12 @@ void uciLoop() {
       ss >> name;
       ss >> token; // "value"
       ss >> value;
-      if (name == "OwnBook") {
+      if (name == "Threads") {
+        int t = std::stoi(value);
+        if (t < 1) t = 1;
+        if (t > 256) t = 256;
+        Search::gNumThreads = t;
+      } else if (name == "OwnBook") {
         Book::setEnabled(value == "true");
       } else if (name == "EvalFile" && !value.empty()) {
         NNUE::init(value);

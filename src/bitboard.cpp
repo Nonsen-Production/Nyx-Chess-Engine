@@ -144,7 +144,7 @@ static std::uint64_t bishopAttacksSlow(int sq, std::uint64_t occ) {
 static std::uint64_t indexToOccupancy(int index, int bits, std::uint64_t mask) {
   std::uint64_t occ = 0;
   for (int i = 0; i < bits; ++i) {
-    int sq = __builtin_ctzll(static_cast<unsigned long long>(mask));
+    int sq = lsb(mask);
     mask &= mask - 1;
     if (index & (1 << i)) {
       occ |= 1ULL << sq;

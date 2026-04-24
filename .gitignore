@@ -30,6 +30,7 @@
 *.exe
 *.out
 *.app
+gen_nnue
 nyx
 
 # CMake build directories
@@ -50,3 +51,9 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+#nnue
+*.nnue
+
+#pythone
+.venv/

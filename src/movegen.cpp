@@ -280,10 +280,8 @@ bool makeMove(Board &board, int from, int to, int promotionPiece) {
   board.zobristKey = positionHash(board);
   board.positionHistory.push_back(board.zobristKey);
 
-  // Recompute NNUE accumulator for the new position
-  if (NNUE::isReady()) {
-    NNUE::computeAccumulator(board.nnueAccumulator, board.sqaures);
-  }
+  // Mark NNUE accumulator as stale — will be recomputed on-demand in evaluateStatic
+  board.nnueAccumulator.valid = false;
 
   return true;
 }
@@ -362,7 +360,7 @@ int countLegalMoves(const Board &board, bool white) {
   return static_cast<int>(generateLegalMoves(setup, false).size());
 }
 int popLeastSignificantBit(std::uint64_t &bitboard) {
-  const int square = __builtin_ctzll(static_cast<unsigned long long>(bitboard));
+  const int square = Bitboards::lsb(bitboard);
   bitboard &= bitboard - 1;
   return square;
 }

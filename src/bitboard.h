@@ -47,7 +47,19 @@ inline std::uint64_t queenAttacks(int sq, std::uint64_t occ) {
   return bishopAttacks(sq, occ) | rookAttacks(sq, occ);
 }
 
-// Utility
+// Utility — cross-platform intrinsics
+#ifdef _MSC_VER
+#include <intrin.h>
+inline int popcount(std::uint64_t bb) {
+  return static_cast<int>(__popcnt64(bb));
+}
+
+inline int lsb(std::uint64_t bb) {
+  unsigned long idx;
+  _BitScanForward64(&idx, bb);
+  return static_cast<int>(idx);
+}
+#else
 inline int popcount(std::uint64_t bb) {
   return __builtin_popcountll(static_cast<unsigned long long>(bb));
 }
@@ -55,6 +67,7 @@ inline int popcount(std::uint64_t bb) {
 inline int lsb(std::uint64_t bb) {
   return __builtin_ctzll(static_cast<unsigned long long>(bb));
 }
+#endif
 
 inline int popLSB(std::uint64_t &bb) {
   int sq = lsb(bb);

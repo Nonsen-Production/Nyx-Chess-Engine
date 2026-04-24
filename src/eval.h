@@ -17,6 +17,7 @@ bool isPassedPawn(int square, bool whitePawn, std::uint64_t enemyPawns);
 int evaluatePawnStructure(const Board &board, bool white);
 int evaluateKingSafety(const Board &board, bool white, int phase);
 int evaluateMobility(const Board &board, bool white);
+int evaluateEndgame(const Board &board, int score, int phase);
 
 int evaluateStaticHCE(const Board &board);
 int evaluateStatic(const Board &board);

@@ -7,6 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <thread>
+#include <chrono>
 
 extern std::string gGameMovesUCI;
 
@@ -85,6 +86,56 @@ static void stopSearchThread(std::thread &searchThread) {
   }
 }
 
+// Perft: count leaf nodes at a given depth to verify move generation
+static std::uint64_t perft(Board &board, int depth) {
+  if (depth == 0) return 1;
+
+  std::vector<Move> moves = Chess::generateLegalMoves(board, false);
+  std::uint64_t nodes = 0;
+
+  for (const Move &move : moves) {
+    Board next = board;
+    if (!Chess::applyMove(next, move)) continue;
+    nodes += perft(next, depth - 1);
+  }
+
+  return nodes;
+}
+
+// Divide perft: prints per-move node counts for debugging
+static void dividePerft(Board &board, int depth) {
+  auto startTime = std::chrono::steady_clock::now();
+
+  std::vector<Move> moves = Chess::generateLegalMoves(board, false);
+  std::uint64_t totalNodes = 0;
+
+  for (const Move &move : moves) {
+    Board next = board;
+    if (!Chess::applyMove(next, move)) continue;
+
+    std::string uci = Chess::squareToAlgebraic(move.from) +
+                      Chess::squareToAlgebraic(move.to);
+    if (move.promotion >= 2 && move.promotion <= 5) {
+      const char promoChars[] = {'\0', '\0', 'n', 'b', 'r', 'q'};
+      uci += promoChars[move.promotion];
+    }
+
+    std::uint64_t nodes = (depth > 1) ? perft(next, depth - 1) : 1;
+    totalNodes += nodes;
+    std::cout << uci << ": " << nodes << std::endl;
+  }
+
+  auto endTime = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
+  if (elapsed == 0) elapsed = 1;
+  std::uint64_t nps = (totalNodes * 1000) / static_cast<std::uint64_t>(elapsed);
+
+  std::cout << std::endl;
+  std::cout << "Nodes searched: " << totalNodes << std::endl;
+  std::cout << "Time: " << elapsed << " ms" << std::endl;
+  std::cout << "NPS: " << nps << std::endl;
+}
+
 void uciLoop() {
   Board board;
   Search::SearchOptions options;
@@ -141,25 +192,15 @@ void uciLoop() {
       // Always stop any previous search before starting a new one
       stopSearchThread(searchThread);
 
-      // Try opening book first
-      std::string bookMove = Book::probe(gGameMovesUCI);
-      if (!bookMove.empty()) {
-        // Validate the book move against the current board
-        Board testBoard = board;
-        if (Chess::applyUCIMove(testBoard, bookMove)) {
-          std::cout << "bestmove " << bookMove << std::endl;
-          continue;
-        }
-        // Book move is illegal for this position — fall through to search
-      }
-
-      // Parse go parameters
+      // Parse go parameters first
       options = Search::SearchOptions(); // Reset to defaults
+      int perftDepth = 0;
       std::istringstream ss(line);
       std::string token;
       ss >> token; // "go"
       while (ss >> token) {
-        if (token == "wtime") ss >> options.wtime;
+        if (token == "perft") ss >> perftDepth;
+        else if (token == "wtime") ss >> options.wtime;
         else if (token == "btime") ss >> options.btime;
         else if (token == "winc") ss >> options.winc;
         else if (token == "binc") ss >> options.binc;
@@ -169,6 +210,24 @@ void uciLoop() {
         else if (token == "mate") ss >> options.mate;
         else if (token == "movetime") ss >> options.movetime;
         else if (token == "infinite") options.infinite = true;
+      }
+
+      // Handle perft (runs synchronously, no book/search)
+      if (perftDepth > 0) {
+        dividePerft(board, perftDepth);
+        continue;
+      }
+
+      // Try opening book
+      std::string bookMove = Book::probe(gGameMovesUCI);
+      if (!bookMove.empty()) {
+        // Validate the book move against the current board
+        Board testBoard = board;
+        if (Chess::applyUCIMove(testBoard, bookMove)) {
+          std::cout << "bestmove " << bookMove << std::endl;
+          continue;
+        }
+        // Book move is illegal for this position — fall through to search
       }
 
       // Launch search in a background thread

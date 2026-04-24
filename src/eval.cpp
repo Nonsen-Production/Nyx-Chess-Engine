@@ -254,11 +254,14 @@ int evaluateKingSafety(const Board &board, bool white, int phase) {
   const int kingRank = Chess::rowOf(kingSquare);
   const int kingFile = Chess::colOf(kingSquare);
   const std::uint64_t friendlyPawns = board.pieceBitboards[white ? 0 : 6];
+  const std::uint64_t enemyPawns = board.pieceBitboards[white ? 6 : 0];
+  const std::uint64_t enemyPieces = white ? board.blackPieces : board.whitePieces;
   int score = 0;
+  int attackerCount = 0;
+  int attackWeight = 0;
 
-  // Only apply pawn shield / open file logic in middlegame
+  // === Pawn Shield (middlegame only) ===
   if (phase > 6) {
-    // Pawn shield: check 3 files around king, 1-2 ranks ahead
     const int shieldDir = white ? 1 : -1;
     for (int df = -1; df <= 1; ++df) {
       const int f = kingFile + df;
@@ -266,80 +269,187 @@ int evaluateKingSafety(const Board &board, bool white, int phase) {
         continue;
 
       bool foundShield = false;
-      // Check 1 rank ahead
       const int r1 = kingRank + shieldDir;
       if (r1 >= 0 && r1 < 8 && (friendlyPawns & (1ULL << (r1 * 8 + f)))) {
-        score += 10;
+        score += (df == 0) ? 15 : 10; // Center file pawn is more important
         foundShield = true;
       }
-      // Check 2 ranks ahead
       if (!foundShield) {
         const int r2 = kingRank + 2 * shieldDir;
         if (r2 >= 0 && r2 < 8 && (friendlyPawns & (1ULL << (r2 * 8 + f)))) {
-          score += 5;
+          score += 4;
           foundShield = true;
         }
       }
       if (!foundShield) {
-        score -= 15; // No pawn shield on this file
+        score -= (df == 0) ? 25 : 18; // Missing shield on king file is worst
       }
     }
 
-    // Open file penalty: king file and adjacent files with no friendly pawns
+    // === Open / Semi-open file penalty near king ===
     for (int df = -1; df <= 1; ++df) {
       const int f = kingFile + df;
       if (f < 0 || f > 7)
         continue;
-      if ((friendlyPawns & FILE_MASKS[f]) == 0) {
-        score -= 20;
+      bool hasFriendlyPawn = (friendlyPawns & FILE_MASKS[f]) != 0;
+      bool hasEnemyPawn = (enemyPawns & FILE_MASKS[f]) != 0;
+      if (!hasFriendlyPawn && !hasEnemyPawn) {
+        score -= 25; // Fully open file
+      } else if (!hasFriendlyPawn) {
+        score -= 15; // Semi-open (enemy pawn only)
       }
     }
-  }
 
-  // Castling bonus/penalty
-  if (white) {
-    // King on g1 or c1 = castled
-    if (kingSquare == 6 || kingSquare == 2) {
-      score += 30;
-    } else if ((board.castle & (Board::WHITE_KINGSIDE | Board::WHITE_QUEENSIDE)) == 0 &&
-               kingSquare == 4) {
-      // Lost castling rights but king still on e1
-      score -= 20;
+    // === Pawn Storm Detection ===
+    // Enemy pawns advancing toward our king
+    for (int df = -1; df <= 1; ++df) {
+      const int f = kingFile + df;
+      if (f < 0 || f > 7) continue;
+      std::uint64_t filePawns = enemyPawns & FILE_MASKS[f];
+      while (filePawns) {
+        const int sq = __builtin_ctzll(static_cast<unsigned long long>(filePawns));
+        filePawns &= filePawns - 1;
+        const int pawnRank = Chess::rowOf(sq);
+        int dist = white ? (pawnRank - kingRank) : (kingRank - pawnRank);
+        // Negative dist means pawn is behind the king (no threat)
+        if (dist >= 0 && dist <= 3) {
+          score -= (4 - dist) * 6; // Closer = more dangerous
+        }
+      }
     }
-  } else {
-    // King on g8 or c8 = castled
-    if (kingSquare == 62 || kingSquare == 58) {
-      score += 30;
-    } else if ((board.castle & (Board::BLACK_KINGSIDE | Board::BLACK_QUEENSIDE)) == 0 &&
-               kingSquare == 60) {
-      score -= 20;
-    }
-  }
 
-  // King tropism: penalize enemy pieces near king
-  if (phase > 6) {
-    const std::uint64_t enemyPieces = white ? board.blackPieces : board.whitePieces;
+    // === Attacker Counting (key king safety concept) ===
+    // Count enemy pieces attacking the king zone (king + surrounding 8 squares)
+    static const int kingZoneDirs[9][2] = {
+        {0, 0}, {1, 0}, {1, 1}, {0, 1}, {-1, 1},
+        {-1, 0}, {-1, -1}, {0, -1}, {1, -1}};
+
+    std::uint64_t kingZone = 0;
+    for (const auto &d : kingZoneDirs) {
+      int r = kingRank + d[0];
+      int c = kingFile + d[1];
+      if (r >= 0 && r < 8 && c >= 0 && c < 8) {
+        kingZone |= 1ULL << (r * 8 + c);
+      }
+    }
+
+    // Check each enemy piece for attacks on king zone
     std::uint64_t enemies = enemyPieces;
     while (enemies) {
       const int sq = __builtin_ctzll(static_cast<unsigned long long>(enemies));
       enemies &= enemies - 1;
-      const int dr = std::abs(Chess::rowOf(sq) - kingRank);
-      const int dc = std::abs(Chess::colOf(sq) - kingFile);
-      const int dist = std::max(dr, dc); // Chebyshev distance
-      if (dist <= 2) {
-        const int enemyType = std::abs(board.sqaures[sq]);
-        // Weight by piece type: queen near king is scariest
-        if (enemyType == 5)
-          score -= 12;
-        else if (enemyType == 4)
-          score -= 6;
-        else if (enemyType == 2 || enemyType == 3)
-          score -= 4;
+      const int enemyType = std::abs(board.sqaures[sq]);
+      const int er = Chess::rowOf(sq);
+      const int ec = Chess::colOf(sq);
+
+      bool attacksKingZone = false;
+
+      switch (enemyType) {
+      case 2: { // Knight
+        static const int knightOff[8][2] = {{2,1},{2,-1},{-2,1},{-2,-1},{1,2},{1,-2},{-1,2},{-1,-2}};
+        for (const auto &off : knightOff) {
+          int r = er + off[0], c = ec + off[1];
+          if (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            if (kingZone & (1ULL << (r * 8 + c))) { attacksKingZone = true; break; }
+          }
+        }
+        if (attacksKingZone) { ++attackerCount; attackWeight += 20; }
+        break;
       }
+      case 3: { // Bishop
+        static const int bDirs[4][2] = {{1,1},{1,-1},{-1,1},{-1,-1}};
+        for (const auto &dir : bDirs) {
+          int r = er + dir[0], c = ec + dir[1];
+          while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            int to = r * 8 + c;
+            if (kingZone & (1ULL << to)) { attacksKingZone = true; break; }
+            if (board.allPieces & (1ULL << to)) break;
+            r += dir[0]; c += dir[1];
+          }
+          if (attacksKingZone) break;
+        }
+        if (attacksKingZone) { ++attackerCount; attackWeight += 20; }
+        break;
+      }
+      case 4: { // Rook
+        static const int rDirs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+        for (const auto &dir : rDirs) {
+          int r = er + dir[0], c = ec + dir[1];
+          while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            int to = r * 8 + c;
+            if (kingZone & (1ULL << to)) { attacksKingZone = true; break; }
+            if (board.allPieces & (1ULL << to)) break;
+            r += dir[0]; c += dir[1];
+          }
+          if (attacksKingZone) break;
+        }
+        if (attacksKingZone) { ++attackerCount; attackWeight += 40; }
+        break;
+      }
+      case 5: { // Queen
+        static const int qDirs[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}};
+        for (const auto &dir : qDirs) {
+          int r = er + dir[0], c = ec + dir[1];
+          while (r >= 0 && r < 8 && c >= 0 && c < 8) {
+            int to = r * 8 + c;
+            if (kingZone & (1ULL << to)) { attacksKingZone = true; break; }
+            if (board.allPieces & (1ULL << to)) break;
+            r += dir[0]; c += dir[1];
+          }
+          if (attacksKingZone) break;
+        }
+        if (attacksKingZone) { ++attackerCount; attackWeight += 80; }
+        break;
+      }
+      default: break;
+      }
+    }
+
+    // Apply attacker penalty with quadratic scaling
+    // More attackers = disproportionately more dangerous
+    static const int safetyTable[9] = {0, 0, 50, 75, 88, 94, 97, 99, 100};
+    int attackIndex = std::min(attackerCount, 8);
+    score -= (attackWeight * safetyTable[attackIndex]) / 100;
+
+    // === Virtual King Mobility ===
+    // Count safe squares around the king (fewer = more dangerous)
+    int safeSq = 0;
+    for (int dr = -1; dr <= 1; ++dr) {
+      for (int dc = -1; dc <= 1; ++dc) {
+        if (dr == 0 && dc == 0) continue;
+        int r = kingRank + dr, c = kingFile + dc;
+        if (r >= 0 && r < 8 && c >= 0 && c < 8) {
+          int to = r * 8 + c;
+          // Square is "safe" if not attacked by opponent and not blocked by friendly piece
+          if (!Chess::isSquareAttacked(board, to, !white)) {
+            ++safeSq;
+          }
+        }
+      }
+    }
+    if (safeSq <= 1) score -= 50;
+    else if (safeSq <= 2) score -= 25;
+    else if (safeSq <= 3) score -= 10;
+  }
+
+  // === Castling bonus/penalty ===
+  if (white) {
+    if (kingSquare == 6 || kingSquare == 2) {
+      score += 35;
+    } else if ((board.castle & (Board::WHITE_KINGSIDE | Board::WHITE_QUEENSIDE)) == 0 &&
+               kingSquare == 4) {
+      score -= 25;
+    }
+  } else {
+    if (kingSquare == 62 || kingSquare == 58) {
+      score += 35;
+    } else if ((board.castle & (Board::BLACK_KINGSIDE | Board::BLACK_QUEENSIDE)) == 0 &&
+               kingSquare == 60) {
+      score -= 25;
     }
   }
 
-  // Scale king safety by game phase (more important in middlegame)
+  // Scale king safety by game phase
   return (score * phase) / 24;
 }
 
@@ -473,7 +583,199 @@ int evaluateMobility(const Board &board, bool white) {
   return score;
 }
 
-// Hand-crafted evaluation (fallback when NNUE is not loaded)
+// === Endgame Knowledge ===
+// Adjusts the evaluation score based on material configuration and endgame patterns.
+int evaluateEndgame(const Board &board, int score, int phase) {
+  // Only apply in late middlegame / endgame (phase <= 10)
+  if (phase > 10) return score;
+
+  // Count material
+  int wPawns = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[0]));
+  int wKnights = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[1]));
+  int wBishops = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[2]));
+  int wRooks = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[3]));
+  int wQueens = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[4]));
+
+  int bPawns = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[6]));
+  int bKnights = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[7]));
+  int bBishops = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[8]));
+  int bRooks = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[9]));
+  int bQueens = __builtin_popcountll(static_cast<unsigned long long>(board.pieceBitboards[10]));
+
+  int wMinor = wKnights + wBishops;
+  int bMinor = bKnights + bBishops;
+  int wMajor = wRooks + wQueens;
+  int bMajor = bRooks + bQueens;
+  int wTotal = wMinor + wMajor;
+  int bTotal = bMinor + bMajor;
+
+  int wKingSq = Chess::findKing(board, true);
+  int bKingSq = Chess::findKing(board, false);
+  if (wKingSq == -1 || bKingSq == -1) return score;
+
+  int wKingRank = Chess::rowOf(wKingSq);
+  int wKingFile = Chess::colOf(wKingSq);
+  int bKingRank = Chess::rowOf(bKingSq);
+  int bKingFile = Chess::colOf(bKingSq);
+
+  // Distance of king to center (0=center, higher=edge)
+  auto distToCenter = [](int rank, int file) -> int {
+    int rd = std::max(3 - rank, rank - 4);
+    int fd = std::max(3 - file, file - 4);
+    return rd + fd;
+  };
+
+  // Distance between the two kings
+  int kingDist = std::max(std::abs(wKingRank - bKingRank),
+                          std::abs(wKingFile - bKingFile));
+
+  // --- Pattern 1: Mating with overwhelming material ---
+  // When one side has mating material and the other doesn't, push the losing
+  // king to the corner/edge and bring the winning king closer
+  bool whiteWinning = (score > 200);
+  bool blackWinning = (score < -200);
+
+  if (whiteWinning && bPawns == 0 && bTotal == 0) {
+    // White has material, black has only king
+    // Reward: black king near corner + kings close together
+    score += distToCenter(bKingRank, bKingFile) * 15;
+    score += (14 - kingDist) * 8;
+    // Edge bonus
+    if (bKingRank == 0 || bKingRank == 7 || bKingFile == 0 || bKingFile == 7)
+      score += 30;
+  }
+  if (blackWinning && wPawns == 0 && wTotal == 0) {
+    // Black has material, white has only king
+    score -= distToCenter(wKingRank, wKingFile) * 15;
+    score -= (14 - kingDist) * 8;
+    if (wKingRank == 0 || wKingRank == 7 || wKingFile == 0 || wKingFile == 7)
+      score -= 30;
+  }
+
+  // --- Pattern 2: KPK - King and Pawn vs King ---
+  // Key rule: passed pawn should advance, winning king should support it
+  if (wTotal == 0 && bTotal == 0) {
+    // Pure pawn endgame
+    // King centralization is crucial
+    score += distToCenter(bKingRank, bKingFile) * 3; // Push enemy king away
+    score -= distToCenter(wKingRank, wKingFile) * 3; // Centralize our king
+
+    // Bonus for king near passed pawns
+    std::uint64_t wPawnBB = board.pieceBitboards[0];
+    while (wPawnBB) {
+      int sq = __builtin_ctzll(static_cast<unsigned long long>(wPawnBB));
+      wPawnBB &= wPawnBB - 1;
+      if (isPassedPawn(sq, true, board.pieceBitboards[6])) {
+        int pawnRank = Chess::rowOf(sq);
+        int pawnFile = Chess::colOf(sq);
+        // Distance of friendly king to pawn
+        int wKingDist = std::max(std::abs(wKingRank - pawnRank),
+                                 std::abs(wKingFile - pawnFile));
+        // Distance of enemy king to promotion square
+        int bKingToPromo = std::max(std::abs(bKingRank - 7),
+                                    std::abs(bKingFile - pawnFile));
+        score += (7 - pawnRank) * 3;  // Advanced = better
+        score -= wKingDist * 5;       // King should be near pawn
+        score += bKingToPromo * 4;    // Enemy king far from promotion = good
+      }
+    }
+
+    std::uint64_t bPawnBB = board.pieceBitboards[6];
+    while (bPawnBB) {
+      int sq = __builtin_ctzll(static_cast<unsigned long long>(bPawnBB));
+      bPawnBB &= bPawnBB - 1;
+      if (isPassedPawn(sq, false, board.pieceBitboards[0])) {
+        int pawnRank = Chess::rowOf(sq);
+        int pawnFile = Chess::colOf(sq);
+        int bKingDist = std::max(std::abs(bKingRank - pawnRank),
+                                 std::abs(bKingFile - pawnFile));
+        int wKingToPromo = std::max(std::abs(wKingRank - 0),
+                                    std::abs(wKingFile - pawnFile));
+        score -= pawnRank * 3;
+        score += bKingDist * 5;
+        score -= wKingToPromo * 4;
+      }
+    }
+  }
+
+  // --- Pattern 3: Rook Endgames ---
+  if (wQueens == 0 && bQueens == 0 && wMinor == 0 && bMinor == 0 &&
+      (wRooks > 0 || bRooks > 0)) {
+    // Rook on 7th rank bonus
+    std::uint64_t wRookBB = board.pieceBitboards[3];
+    while (wRookBB) {
+      int sq = __builtin_ctzll(static_cast<unsigned long long>(wRookBB));
+      wRookBB &= wRookBB - 1;
+      if (Chess::rowOf(sq) == 6) score += 30; // Rook on 7th
+      // Rook behind passed pawn
+      int rookFile = Chess::colOf(sq);
+      std::uint64_t filePawns = board.pieceBitboards[0] & FILE_MASKS[rookFile];
+      while (filePawns) {
+        int pSq = __builtin_ctzll(static_cast<unsigned long long>(filePawns));
+        filePawns &= filePawns - 1;
+        if (isPassedPawn(pSq, true, board.pieceBitboards[6]) &&
+            Chess::rowOf(sq) < Chess::rowOf(pSq)) {
+          score += 20; // Rook behind own passed pawn
+        }
+      }
+    }
+
+    std::uint64_t bRookBB = board.pieceBitboards[9];
+    while (bRookBB) {
+      int sq = __builtin_ctzll(static_cast<unsigned long long>(bRookBB));
+      bRookBB &= bRookBB - 1;
+      if (Chess::rowOf(sq) == 1) score -= 30; // Rook on 2nd
+      int rookFile = Chess::colOf(sq);
+      std::uint64_t filePawns = board.pieceBitboards[6] & FILE_MASKS[rookFile];
+      while (filePawns) {
+        int pSq = __builtin_ctzll(static_cast<unsigned long long>(filePawns));
+        filePawns &= filePawns - 1;
+        if (isPassedPawn(pSq, false, board.pieceBitboards[0]) &&
+            Chess::rowOf(sq) > Chess::rowOf(pSq)) {
+          score -= 20; // Rook behind own passed pawn
+        }
+      }
+    }
+  }
+
+  // --- Pattern 4: Opposite-colored Bishop Endgames ---
+  // These are very drawish, scale down the eval
+  if (wBishops == 1 && bBishops == 1 && wKnights == 0 && bKnights == 0 &&
+      wMajor == 0 && bMajor == 0) {
+    // Find bishop square colors
+    int wBishopColor = -1, bBishopColor = -1;
+    for (int sq = 0; sq < 64; ++sq) {
+      if (board.sqaures[sq] == 3)
+        wBishopColor = (Chess::rowOf(sq) + Chess::colOf(sq)) % 2;
+      else if (board.sqaures[sq] == -3)
+        bBishopColor = (Chess::rowOf(sq) + Chess::colOf(sq)) % 2;
+    }
+    if (wBishopColor != -1 && bBishopColor != -1 &&
+        wBishopColor != bBishopColor) {
+      // Opposite colored bishops - scale eval toward draw
+      score = score * 60 / 100;
+    }
+  }
+
+  // --- Pattern 5: No pawns = likely draw if material is roughly equal ---
+  if (wPawns == 0 && bPawns == 0) {
+    // KN vs K, KB vs K = draw (cannot force mate)
+    if (wTotal <= 1 && bTotal == 0) score = score / 8;
+    if (bTotal <= 1 && wTotal == 0) score = score / 8;
+    // KNN vs K = draw (cannot force mate with two knights)
+    if (wKnights == 2 && wBishops == 0 && wMajor == 0 && bTotal == 0) score = score / 8;
+    if (bKnights == 2 && bBishops == 0 && bMajor == 0 && wTotal == 0) score = score / 8;
+  }
+
+  // --- General endgame: King centralization ---
+  if (phase <= 6) {
+    score -= distToCenter(wKingRank, wKingFile) * 5;
+    score += distToCenter(bKingRank, bKingFile) * 5;
+  }
+
+  return score;
+}
+
 int evaluateStaticHCE(const Board &board) {
   int mgScore = 0;
   int egScore = 0;
@@ -526,6 +828,9 @@ int evaluateStaticHCE(const Board &board) {
     score += 12;
   if (Chess::isInCheck(board, true))
     score -= 12;
+
+  // === Endgame Knowledge ===
+  score = evaluateEndgame(board, score, phase);
 
   return score;
 }

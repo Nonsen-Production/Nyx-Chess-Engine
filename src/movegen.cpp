@@ -288,7 +288,9 @@ bool makeMove(Board &board, int from, int to, int promotionPiece) {
 bool hasAnyLegalMove(const Board &board, bool white) {
   Board setup = board;
   setup.whiteTurn = white;
-  return !generateLegalMoves(setup, false).empty();
+  MoveList moves;
+  generateLegalMoves(setup, moves, false);
+  return !moves.empty();
 }
 
 bool isCheckmate(const Board &board, bool white) {
@@ -357,7 +359,9 @@ bool isDraw(const Board &board) {
 int countLegalMoves(const Board &board, bool white) {
   Board setup = board;
   setup.whiteTurn = white;
-  return static_cast<int>(generateLegalMoves(setup, false).size());
+  MoveList moves;
+  generateLegalMoves(setup, moves, false);
+  return moves.size();
 }
 int popLeastSignificantBit(std::uint64_t &bitboard) {
   const int square = Bitboards::lsb(bitboard);
@@ -369,8 +373,8 @@ bool applyMove(Board &board, const Move &move) {
     return Chess::makeMove(board, move.from, move.to);
   return Chess::makeMove(board, move.from, move.to, move.promotion);
 }
-std::vector<Move> generateLegalMoves(const Board &board, bool capturesOnly) {
-  std::vector<Move> moves;
+void generateLegalMoves(const Board &board, MoveList& moves, bool capturesOnly) {
+  moves.count = 0;
   const bool whiteToMove = board.whiteTurn;
   const std::uint64_t friendlyOcc =
       whiteToMove ? board.whitePieces : board.blackPieces;
@@ -421,7 +425,7 @@ std::vector<Move> generateLegalMoves(const Board &board, bool capturesOnly) {
                              : Chess::makeMove(next, from, to, promotion);
 
       if (legal)
-        moves.push_back(move);
+        moves.add(move);
     }
   };
 
@@ -532,7 +536,6 @@ std::vector<Move> generateLegalMoves(const Board &board, bool capturesOnly) {
     }
   }
 
-  return moves;
 }
 
 } // namespace Chess

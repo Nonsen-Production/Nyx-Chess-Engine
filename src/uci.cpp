@@ -90,7 +90,8 @@ static void stopSearchThread(std::thread &searchThread) {
 static std::uint64_t perft(Board &board, int depth) {
   if (depth == 0) return 1;
 
-  std::vector<Move> moves = Chess::generateLegalMoves(board, false);
+  MoveList moves;
+  Chess::generateLegalMoves(board, moves, false);
   std::uint64_t nodes = 0;
 
   for (const Move &move : moves) {
@@ -106,7 +107,8 @@ static std::uint64_t perft(Board &board, int depth) {
 static void dividePerft(Board &board, int depth) {
   auto startTime = std::chrono::steady_clock::now();
 
-  std::vector<Move> moves = Chess::generateLegalMoves(board, false);
+  MoveList moves;
+  Chess::generateLegalMoves(board, moves, false);
   std::uint64_t totalNodes = 0;
 
   for (const Move &move : moves) {
@@ -230,6 +232,7 @@ void uciLoop() {
         // Validate the book move against the current board
         Board testBoard = board;
         if (Chess::applyUCIMove(testBoard, bookMove)) {
+          std::cout << "info depth 1 score cp 0 nodes 1 nps 1000 time 1 pv " << bookMove << std::endl;
           std::cout << "bestmove " << bookMove << std::endl;
           continue;
         }

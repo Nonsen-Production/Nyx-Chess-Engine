@@ -59,6 +59,7 @@ struct SearchResult {
 struct SearchState {
   std::array<std::array<int, 2>, MAX_PLY> killer;
   int history[2][64][64] = {{{0}}};
+  int counterMove[2][64][64] = {{{0}}};
 
   SearchState() {
     for (auto &entry : killer) {

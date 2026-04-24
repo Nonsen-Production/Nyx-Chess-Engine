@@ -20,7 +20,7 @@ bool applyMove(Board &board, const Move &move);
 
 int popLeastSignificantBit(std::uint64_t &bitboard);
 
-std::vector<Move> generateLegalMoves(const Board &board, bool capturesOnly);
+void generateLegalMoves(const Board &board, MoveList& moves, bool capturesOnly);
 bool hasAnyLegalMove(const Board &board, bool white);
 int countLegalMoves(const Board &board, bool white);
 

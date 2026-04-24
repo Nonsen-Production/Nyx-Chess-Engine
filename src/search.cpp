@@ -2,6 +2,7 @@
 #include "movegen.h"
 #include "eval.h"
 #include "utils.h"
+#include "see.h"
 #include <algorithm>
 #include <iostream>
 #include <cmath>
@@ -171,7 +172,7 @@ int evaluateForSideToMove(const Board &board) {
   const int whiteScore = staticEvaluateWhite(board);
   return board.whiteTurn ? whiteScore : -whiteScore;
 }
-void orderMoves(std::vector<Move> &moves, const Board &board, int ply,
+void orderMoves(MoveList &moves, const Board &board, int ply,
                 SearchState &state, SearchStats &stats, int preferredMoveCode) {
   const int sideIndex = board.whiteTurn ? 1 : 0;
 
@@ -228,7 +229,8 @@ int quiescence(Board &board, int alpha, int beta, int ply, SearchState &state,
     if (ply >= options.quiescenceMaxPly)
       return evaluateForSideToMove(board);
 
-    std::vector<Move> evasions = Chess::generateLegalMoves(board, false);
+    MoveList evasions;
+    Chess::generateLegalMoves(board, evasions, false);
     if (evasions.empty())
       return -MATE_SCORE + ply;
 
@@ -261,10 +263,27 @@ int quiescence(Board &board, int alpha, int beta, int ply, SearchState &state,
   if (ply >= options.quiescenceMaxPly)
     return alpha;
 
-  std::vector<Move> captures = Chess::generateLegalMoves(board, true);
+  MoveList captures;
+  Chess::generateLegalMoves(board, captures, true);
   orderMoves(captures, board, ply, state, stats, -1);
 
   for (const Move &move : captures) {
+    // Delta Pruning
+    int capturedValue = Eval::pieceBaseValue(move.capturedType);
+    if (move.promotion != 0) {
+        capturedValue += Eval::pieceBaseValue(move.promotion) - 100; // PAWN_VALUE is 100
+    }
+    // Add a 200cp safety margin to avoid missing tactical shots
+    if (standPat + capturedValue + 200 < alpha) {
+        continue;
+    }
+
+    // SEE Pruning (Static Exchange Evaluation)
+    // If the capture loses material in the resulting exchange sequence, skip it
+    if (!Search::see(board, move, 0)) {
+        continue;
+    }
+
     Board next = board;
     if (!Chess::applyMove(next, move))
       continue;
@@ -301,7 +320,8 @@ int negamaxMiniMax(Board &board, int depth, int ply, SearchStats &stats) {
     return 0;
   }
 
-  std::vector<Move> moves = Chess::generateLegalMoves(board, false);
+  MoveList moves;
+  Chess::generateLegalMoves(board, moves, false);
   if (moves.empty()) {
     return Chess::isInCheck(board, board.whiteTurn) ? (-MATE_SCORE + ply) : 0;
   }
@@ -376,7 +396,8 @@ int negamaxAlphaBeta(Board &board, int depth, int alpha, int beta, int ply,
     }
   }
 
-  std::vector<Move> moves = Chess::generateLegalMoves(board, false);
+  MoveList moves;
+  Chess::generateLegalMoves(board, moves, false);
   if (moves.empty()) {
     const int terminal =
         Chess::isInCheck(board, board.whiteTurn) ? (-MATE_SCORE + ply) : 0;
@@ -386,6 +407,15 @@ int negamaxAlphaBeta(Board &board, int depth, int alpha, int beta, int ply,
   }
 
   orderMoves(moves, board, ply, state, stats, ttBestMoveCode);
+
+  // === Reverse Futility Pruning (Static Null Move) ===
+  if (!inCheck && depth <= 3 && ply > 0) {
+    int staticEval = evaluateForSideToMove(board);
+    static const int reverseFutilityMargins[4] = {0, 120, 240, 360};
+    if (staticEval - reverseFutilityMargins[depth] >= beta) {
+      return beta;
+    }
+  }
 
   // === Futility Pruning ===
   // If we're at a shallow depth and our static eval is already far below alpha,
@@ -428,13 +458,30 @@ int negamaxAlphaBeta(Board &board, int depth, int alpha, int beta, int ply,
       if (newDepth < 1) newDepth = 1;
     }
 
-    int score = -negamaxAlphaBeta(next, newDepth, -beta, -alpha, ply + 1,
-                                  state, stats, options);
+    // Late Move Pruning (LMP): skip quiet moves deep in the move list at low depths
+    if (!inCheck && depth <= 2 && moveIndex >= 6 + depth * 3 && !move.isCapture && move.promotion == 0) {
+      ++moveIndex;
+      continue;
+    }
 
-    // Re-search at full depth if LMR found something interesting
-    if (newDepth < depth - 1 && score > alpha) {
-      score = -negamaxAlphaBeta(next, depth - 1, -beta, -alpha, ply + 1,
-                                state, stats, options);
+    int score;
+    if (moveIndex == 0) {
+      // First move: full window search
+      score = -negamaxAlphaBeta(next, newDepth, -beta, -alpha, ply + 1, state, stats, options);
+    } else {
+      // PVS: null window search for remaining moves
+      score = -negamaxAlphaBeta(next, newDepth, -alpha - 1, -alpha, ply + 1, state, stats, options);
+      
+      // If LMR failed high, re-search at full depth with null window
+      if (score > alpha && newDepth < depth - 1) {
+        newDepth = depth - 1;
+        score = -negamaxAlphaBeta(next, newDepth, -alpha - 1, -alpha, ply + 1, state, stats, options);
+      }
+      
+      // If null window failed high, re-search with full window
+      if (score > alpha && score < beta) {
+        score = -negamaxAlphaBeta(next, depth - 1, -beta, -alpha, ply + 1, state, stats, options);
+      }
     }
 
     if (score > bestScore) {
@@ -480,7 +527,8 @@ SearchResult runMiniMax(const Board &rootBoard, int depth) {
   SearchResult result;
   SearchStats stats;
 
-  std::vector<Move> moves = Chess::generateLegalMoves(rootBoard, false);
+  MoveList moves;
+  Chess::generateLegalMoves(rootBoard, moves, false);
   if (moves.empty()) {
     result.stats = stats;
     return result;
@@ -514,7 +562,8 @@ SearchResult runAlphaBeta(const Board &rootBoard, int depth, SearchState &state,
   SearchResult result;
   SearchStats stats;
 
-  std::vector<Move> moves = Chess::generateLegalMoves(rootBoard, false);
+  MoveList moves;
+  Chess::generateLegalMoves(rootBoard, moves, false);
   orderMoves(moves, rootBoard, 0, state, stats, preferredMoveCode);
 
   if (moves.empty()) {
@@ -643,12 +692,25 @@ SearchResult runIterativeDeepening(const Board &rootBoard, SearchState &state,
 
       std::string pv = getPV(rootBoard, depth);
 
+      std::string scoreStr;
+      if (std::abs(iteration.scoreForSideToMove) >= MATE_SCORE - MAX_PLY) {
+        int mateDist = MATE_SCORE - std::abs(iteration.scoreForSideToMove);
+        mateDist = (mateDist + 1) / 2; // Plies to full moves
+        if (iteration.scoreForSideToMove < 0) mateDist = -mateDist;
+        scoreStr = "mate " + std::to_string(mateDist);
+      } else {
+        scoreStr = "cp " + std::to_string(iteration.scoreForSideToMove);
+      }
+
       std::cout << "info depth " << depth
-                << " score cp " << iteration.scoreForSideToMove
+                << " score " << scoreStr
                 << " nodes " << totalStats.nodes
                 << " nps " << nps
-                << " time " << elapsed
-                << " pv " << pv << std::endl;
+                << " time " << elapsed;
+      if (!pv.empty()) {
+        std::cout << " pv " << pv;
+      }
+      std::cout << std::endl;
     }
 
     if (options.nodes > 0 && totalStats.nodes >= options.nodes) {

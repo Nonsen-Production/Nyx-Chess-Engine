@@ -37,6 +37,7 @@ set(SOURCES
     src/nnue.cpp
     src/book.cpp
     src/bitboard.cpp
+    src/see.cpp
 )
 
 # Create the executable

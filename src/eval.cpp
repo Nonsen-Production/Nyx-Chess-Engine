@@ -688,10 +688,73 @@ int evaluateStaticHCE(const Board &board) {
   const int tapered = (mgScore * phase + egScore * (24 - phase)) / 24;
 
   int score = tapered;
+
+  // === Bishop pair bonus ===
   if (whiteBishops >= 2)
     score += 30;
   if (blackBishops >= 2)
     score -= 30;
+
+  // === Tempo bonus === (small bonus for having the move)
+  score += board.whiteTurn ? 14 : -14;
+
+  // === Rook on open/semi-open file ===
+  const std::uint64_t allPawns = board.pieceBitboards[0] | board.pieceBitboards[6];
+  std::uint64_t wRooks = board.pieceBitboards[3];
+  while (wRooks) {
+    int sq = Bitboards::popLSB(wRooks);
+    int f = Chess::colOf(sq);
+    std::uint64_t filePawns = allPawns & FILE_MASKS[f];
+    if (filePawns == 0) score += 20;                                    // open file
+    else if ((board.pieceBitboards[0] & FILE_MASKS[f]) == 0) score += 10; // semi-open
+  }
+  std::uint64_t bRooks = board.pieceBitboards[9];
+  while (bRooks) {
+    int sq = Bitboards::popLSB(bRooks);
+    int f = Chess::colOf(sq);
+    std::uint64_t filePawns = allPawns & FILE_MASKS[f];
+    if (filePawns == 0) score -= 20;
+    else if ((board.pieceBitboards[6] & FILE_MASKS[f]) == 0) score -= 10;
+  }
+
+  // === Knight outpost ===
+  // Knight on rank 4-6, supported by own pawn, no enemy pawn can attack
+  std::uint64_t wKnights = board.pieceBitboards[1];
+  while (wKnights) {
+    int sq = Bitboards::popLSB(wKnights);
+    int rank = Chess::rowOf(sq);
+    int file = Chess::colOf(sq);
+    if (rank >= 3 && rank <= 5) {
+      // Check if supported by a white pawn
+      std::uint64_t supportMask = Bitboards::PAWN_ATTACKS[1][sq]; // black pawn attacks = white pawn support squares
+      if (board.pieceBitboards[0] & supportMask) {
+        // Check no enemy pawn can attack this square
+        bool safe = true;
+        for (int r = rank + 1; r < 8 && safe; ++r) {
+          if (file > 0 && (board.pieceBitboards[6] & (1ULL << (r * 8 + file - 1)))) safe = false;
+          if (file < 7 && (board.pieceBitboards[6] & (1ULL << (r * 8 + file + 1)))) safe = false;
+        }
+        if (safe) score += 20;
+      }
+    }
+  }
+  std::uint64_t bKnightsOp = board.pieceBitboards[7];
+  while (bKnightsOp) {
+    int sq = Bitboards::popLSB(bKnightsOp);
+    int rank = Chess::rowOf(sq);
+    int file = Chess::colOf(sq);
+    if (rank >= 2 && rank <= 4) {
+      std::uint64_t supportMask = Bitboards::PAWN_ATTACKS[0][sq];
+      if (board.pieceBitboards[6] & supportMask) {
+        bool safe = true;
+        for (int r = rank - 1; r >= 0 && safe; --r) {
+          if (file > 0 && (board.pieceBitboards[0] & (1ULL << (r * 8 + file - 1)))) safe = false;
+          if (file < 7 && (board.pieceBitboards[0] & (1ULL << (r * 8 + file + 1)))) safe = false;
+        }
+        if (safe) score -= 20;
+      }
+    }
+  }
 
   score += evaluatePawnStructure(board, true);
   score -= evaluatePawnStructure(board, false);
@@ -714,19 +777,21 @@ int evaluateStaticHCE(const Board &board) {
 }
 
 int evaluateStatic(const Board &board) {
-  // Use NNUE evaluation when available
-  if (NNUE::isReady()) {
-    // Lazily compute accumulator on demand
-    if (!board.nnueAccumulator.valid) {
-      NNUE::computeAccumulator(
-          const_cast<Board &>(board).nnueAccumulator, board.sqaures);
-    }
-    if (board.nnueAccumulator.valid) {
-      return NNUE::evaluate(board.nnueAccumulator, board.whiteTurn);
-    }
+  // HCE is always the primary evaluation
+  int hceScore = evaluateStaticHCE(board);
+
+  // If NNUE is loaded and accumulator is already computed, blend it as reference
+  // Note: we do NOT compute the accumulator here to avoid the O(768*256) overhead.
+  // The accumulator must be pre-set (e.g., at root or via incremental updates).
+  if (NNUE::isReady() && board.nnueAccumulator.valid) {
+    int nnueScore = NNUE::evaluate(board.nnueAccumulator, board.whiteTurn);
+    // Convert NNUE from STM perspective to white's perspective for blending
+    if (!board.whiteTurn) nnueScore = -nnueScore;
+    // Blend: 75% HCE + 25% NNUE
+    return (hceScore * 3 + nnueScore) / 4;
   }
-  // Fallback to hand-crafted evaluation
-  return evaluateStaticHCE(board);
+
+  return hceScore;
 }
 int evaluate(const Board &board) {
   static constexpr int MATE_SCORE = 100000;

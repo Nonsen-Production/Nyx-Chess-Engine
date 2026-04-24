@@ -31,6 +31,7 @@
 *.out
 *.app
 gen_nnue
+gen_data
 nyx
 
 # CMake build directories
@@ -53,6 +54,7 @@ Thumbs.db
 *.swp
 
 #nnue
+*.bin
 *.nnue
 
 #pythone

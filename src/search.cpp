@@ -4,6 +4,7 @@
 #include "utils.h"
 #include <algorithm>
 #include <iostream>
+#include <cmath>
 #include <vector>
 #include <thread>
 
@@ -386,22 +387,45 @@ int negamaxAlphaBeta(Board &board, int depth, int alpha, int beta, int ply,
 
   orderMoves(moves, board, ply, state, stats, ttBestMoveCode);
 
+  // === Futility Pruning ===
+  // If we're at a shallow depth and our static eval is already far below alpha,
+  // quiet moves are unlikely to raise alpha. Skip them.
+  bool canFutilityPrune = false;
+  if (!inCheck && depth <= 3 && ply > 0) {
+    int staticEval = evaluateForSideToMove(board);
+    static const int futilityMargins[4] = {0, 200, 350, 500};
+    if (staticEval + futilityMargins[depth] <= alpha) {
+      canFutilityPrune = true;
+    }
+  }
+
   int bestScore = -INF;
   int bestMoveCode = -1;
   const int sideIndex = board.whiteTurn ? 1 : 0;
   int moveIndex = 0;
 
   for (const Move &move : moves) {
+    // Futility prune: skip quiet moves that won't raise alpha
+    if (canFutilityPrune && moveIndex > 0 && !move.isCapture &&
+        move.promotion == 0) {
+      ++moveIndex;
+      continue;
+    }
+
     Board next = board;
     if (!Chess::applyMove(next, move))
       continue;
 
     int newDepth = depth - 1;
 
-    // Late Move Reduction (LMR): reduce depth for late quiet moves
-    if (moveIndex >= 4 && depth >= 3 && !move.isCapture &&
+    // Late Move Reduction (LMR): logarithmic reduction for late quiet moves
+    if (moveIndex >= 3 && depth >= 3 && !move.isCapture &&
         move.promotion == 0 && !inCheck) {
-      newDepth -= 1;
+      // Logarithmic reduction: more aggressive for later moves and deeper searches
+      int reduction = 1 + static_cast<int>(std::log(depth) * std::log(moveIndex + 1) / 2.5);
+      if (reduction > depth - 1) reduction = depth - 1;
+      newDepth -= reduction;
+      if (newDepth < 1) newDepth = 1;
     }
 
     int score = -negamaxAlphaBeta(next, newDepth, -beta, -alpha, ply + 1,

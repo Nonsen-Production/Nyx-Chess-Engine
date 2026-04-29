@@ -1,5 +1,6 @@
+![](https://i.imgur.com/VWepzCI.png)
+___
 # Nyx Chess Engine
-
 Nyx is a **cross-platform**, UCI-compatible chess engine written in C++17. It features a modern search architecture, including alpha-beta pruning, quiescence search, null move pruning, late move reductions, and an efficiently updatable neural network (NNUE) evaluation function.
 
 It natively supports **Windows**, **macOS**, and **Linux**.
